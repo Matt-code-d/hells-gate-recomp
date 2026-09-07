@@ -41,6 +41,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DisplayOptions.cs" />
     <Compile Include="GameConfig.cs" />
     <Compile Include="GitHubUpdater.cs" />
     <Compile Include="PathHelper.cs" />

@@ -54,25 +54,29 @@
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="180" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
 
-                                    <Label Grid.Row="0" Grid.Column="0" Content="Resolution Scale:" />
-                                    <ComboBox x:Name="ResScaleCombo" Grid.Row="0" Grid.Column="1" Margin="0,2" />
+                                    <Label Grid.Row="0" Grid.Column="0" Content="Display:" />
+                                    <TextBlock x:Name="DetectedDisplayText" Grid.Row="0" Grid.Column="1" Margin="2,6" TextWrapping="Wrap" Opacity="0.85" />
 
-                                    <Label Grid.Row="1" Grid.Column="0" Content="Aspect Ratio:" />
-                                    <ComboBox x:Name="AspectRatioCombo" Grid.Row="1" Grid.Column="1" Margin="0,2" ToolTip="Select your monitor's aspect ratio for correct Hor+ ultrawide rendering. Native = use the game's original 16:9." />
+                                    <Label Grid.Row="1" Grid.Column="0" Content="Resolution:" />
+                                    <ComboBox x:Name="ResolutionCombo" Grid.Row="1" Grid.Column="1" Margin="0,2" ToolTip="Internal render resolution. Values shown are display-equivalent; the game renders at 16:9 pixels and is stretched to your monitor's aspect ratio." />
 
-                                    <Label Grid.Row="2" Grid.Column="0" Content="Anti-Aliasing:" />
-                                    <ComboBox x:Name="AAModeCombo" Grid.Row="2" Grid.Column="1" Margin="0,2" />
+                                    <Label Grid.Row="2" Grid.Column="0" Content="Renderer:" />
+                                    <ComboBox x:Name="RendererCombo" Grid.Row="2" Grid.Column="1" Margin="0,2" ToolTip="ReXGlue = original D3D12 presenter. Native = experimental DiligentCore/Vulkan presenter with GPU interop." />
 
-                                    <Label Grid.Row="3" Grid.Column="0" Content="Texture Filtering:" />
-                                    <ComboBox x:Name="AnisoCombo" Grid.Row="3" Grid.Column="1" Margin="0,2" />
+                                    <Label Grid.Row="3" Grid.Column="0" Content="Anti-Aliasing:" />
+                                    <ComboBox x:Name="AAModeCombo" Grid.Row="3" Grid.Column="1" Margin="0,2" />
 
-                                    <CheckBox x:Name="FullscreenCheck" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Content="Fullscreen" Margin="0,8,0,0" />
+                                    <Label Grid.Row="4" Grid.Column="0" Content="Texture Filtering:" />
+                                    <ComboBox x:Name="AnisoCombo" Grid.Row="4" Grid.Column="1" Margin="0,2" />
+
+                                    <CheckBox x:Name="FullscreenCheck" Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2" Content="Fullscreen" Margin="0,8,0,0" />
                                 </Grid>
                             </GroupBox>
 

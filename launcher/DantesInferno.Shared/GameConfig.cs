@@ -183,5 +183,51 @@ namespace DantesInferno
             get { return this["aspect_ratio"] ?? "native"; }
             set { this["aspect_ratio"] = value; }
         }
+
+        public string Renderer
+        {
+            get { return this["renderer"] ?? DisplayOptions.RendererReXGlue; }
+            set { this["renderer"] = value; }
+        }
+
+        public bool Remove(string key)
+        {
+            if (string.IsNullOrEmpty(key))
+                return false;
+            return _values.Remove(key);
+        }
+
+        public bool ContainsKey(string key)
+        {
+            return !string.IsNullOrEmpty(key) && _values.ContainsKey(key);
+        }
+
+        public bool MigrateLegacySettings()
+        {
+            bool changed = false;
+
+            if (Remove("aspect_ratio"))
+                changed = true;
+            if (Remove("resolution"))
+                changed = true;
+
+            int rawScale = Get("resolution_scale", DisplayOptions.MinScale);
+            int clampedScale = DisplayOptions.ClampScale(rawScale);
+            if (!ContainsKey("resolution_scale") || rawScale != clampedScale ||
+                this["resolution_scale"] != clampedScale.ToString(CultureInfo.InvariantCulture))
+            {
+                ResolutionScale = clampedScale;
+                changed = true;
+            }
+
+            string renderer = DisplayOptions.NormalizeRenderer(this["renderer"]);
+            if (!ContainsKey("renderer") || this["renderer"] != renderer)
+            {
+                Renderer = renderer;
+                changed = true;
+            }
+
+            return changed;
+        }
     }
 }
