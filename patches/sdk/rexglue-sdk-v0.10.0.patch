@@ -13,7 +13,7 @@ index 96d362b..f83f172 100644
    explicit D3D12CommandProcessor(D3D12GraphicsSystem* graphics_system,
                                   system::KernelState* kernel_state);
 diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
-index 4d845c7..40cd077 100644
+index 4d845c7..ed663c7 100644
 --- a/include/rex/graphics/d3d12/texture_cache.h
 +++ b/include/rex/graphics/d3d12/texture_cache.h
 @@ -114,7 +114,12 @@ class D3D12TextureCache final : public TextureCache {
@@ -46,7 +46,7 @@ index 4d845c7..40cd077 100644
 +  // CPU-mapped upload buffers for linear chroma planes. These must stay alive
 +  // until the GPU completes the CopyTextureRegion command that reads from them.
 +  // The local ComPtr would be destroyed when the function returns, but the
-+  // deferred command list hasn't been executed yet â€” causing a use-after-free
++  // deferred command list hasn't been executed yet ├óÔéČÔÇŁ causing a use-after-free
 +  // crash in the GPU driver (0xC0000005 in nvwgf2umx.dll).
 +  struct PendingLinearUpload {
 +    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
@@ -192,11 +192,49 @@ index 7ae42a8..e51caf7 100644
    };
  
    static bool TryDecodeLoadStore(const uint8_t* p, DecodedLoadStore& decoded_out);
+diff --git a/include/rex/ui/d3d12/d3d12_presenter.h b/include/rex/ui/d3d12/d3d12_presenter.h
+index 83d09f7..be3e231 100644
+--- a/include/rex/ui/d3d12/d3d12_presenter.h
++++ b/include/rex/ui/d3d12/d3d12_presenter.h
+@@ -87,6 +87,9 @@ class D3D12Presenter final : public Presenter {
+ 
+   bool CaptureGuestOutput(RawImage& image_out) override;
+ 
++  bool GetGuestOutputSharedTexture(GuestOutputSharedTexture& out) override;
++  void ReleaseGuestOutputSharedTexture() override;
++
+   void AwaitUISubmissionCompletionFromUIThread(UINT64 submission_index) {
+     ui_submission_tracker_.AwaitSubmissionCompletion(submission_index);
+   }
+@@ -295,6 +298,14 @@ class D3D12Presenter final : public Presenter {
+   // texture, which may be null. The indices are the mailbox indices.
+   std::array<std::pair<UINT64, Microsoft::WRL::ComPtr<ID3D12Resource>>, kGuestOutputMailboxSize>
+       guest_output_resources_;
++  std::array<HANDLE, kGuestOutputMailboxSize> guest_output_shared_handles_{};
++  std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kGuestOutputMailboxSize>
++      guest_output_shared_copy_resources_;
++  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> guest_output_copy_cmd_allocator_;
++  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> guest_output_copy_cmd_list_;
++  Microsoft::WRL::ComPtr<ID3D12Fence> guest_output_copy_fence_;
++  uint64_t guest_output_copy_fence_value_ = 0;
++  Microsoft::WRL::ComPtr<ID3D12Resource> guest_output_shared_texture_ref_;
+   // The guest output resources are protected by two submission trackers - the
+   // refresher ones (for writing to them via the guest_output_resources_
+   // references) and the paint one (for presenting it via the
 diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
-index afb4a30..2d54542 100644
+index afb4a30..bf56629 100644
 --- a/include/rex/ui/presenter.h
 +++ b/include/rex/ui/presenter.h
-@@ -358,6 +358,11 @@ class Presenter {
+@@ -101,6 +101,8 @@ class AppUIDrawContext : public UIDrawContext {
+ };
+ 
+ struct RawImage {
++  uint32_t display_aspect_ratio_x = 0;
++  uint32_t display_aspect_ratio_y = 0;
+   uint32_t width = 0;
+   uint32_t height = 0;
+   size_t stride = 0;
+@@ -358,10 +360,26 @@ class Presenter {
    bool RefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuffer_height,
                            uint32_t display_aspect_ratio_x, uint32_t display_aspect_ratio_y,
                            std::function<bool(GuestOutputRefreshContext& context)> refresher);
@@ -208,7 +246,22 @@ index afb4a30..2d54542 100644
    // The implementation must be callable from any thread, including from
    // multiple at the same time, and it should acquire the latest guest output
    // image via ConsumeGuestOutput.
-@@ -977,6 +982,9 @@ class Presenter {
+   virtual bool CaptureGuestOutput(RawImage& image_out) = 0;
++  struct GuestOutputSharedTexture {
++    void* handle = nullptr;
++    uint32_t width = 0;
++    uint32_t height = 0;
++    uint32_t adapter_luid_low = 0;
++    int32_t adapter_luid_high = 0;
++  };
++  virtual bool GetGuestOutputSharedTexture(GuestOutputSharedTexture& out) {
++    return false;
++  }
++  virtual void ReleaseGuestOutputSharedTexture() {}
+   const GuestOutputPaintConfig& GetGuestOutputPaintConfigFromUIThread() const {
+     return guest_output_paint_config_;
+   }
+@@ -977,6 +995,9 @@ class Presenter {
    // rather than being blank.
    bool guest_output_active_last_refresh_ = false;
  
@@ -345,7 +398,7 @@ index 3dd7fa5..165711f 100644
    emitVectorTempEA(ctx);
    ctx.println(
 diff --git a/src/codegen/builders/vector.cpp b/src/codegen/builders/vector.cpp
-index cbdd7f7..5b8fc54 100644
+index cbdd7f7..bacd019 100644
 --- a/src/codegen/builders/vector.cpp
 +++ b/src/codegen/builders/vector.cpp
 @@ -32,13 +32,17 @@ namespace rex::codegen {
@@ -356,10 +409,10 @@ index cbdd7f7..5b8fc54 100644
 -//   High nibble (AAAA): Which source elements to multiply (bit 7=x, 6=y, 5=z, 4=w)
 -//   Low nibble (BBBB):  Which destination elements receive the result
 +// where the result is broadcast. Format: 0bSSSSDDDD
-+//   High nibble (SSSS): Source/sum mask â€” bit (i+4) selects host element i
-+//     bit 4 â†’ host elem 0, bit 5 â†’ host elem 1,
-+//     bit 6 â†’ host elem 2, bit 7 â†’ host elem 3
-+//   Low nibble (DDDD):  Destination/broadcast mask â€” bit i selects host element i
++//   High nibble (SSSS): Source/sum mask ├óÔéČÔÇŁ bit (i+4) selects host element i
++//     bit 4 ├óÔÇáÔÇÖ host elem 0, bit 5 ├óÔÇáÔÇÖ host elem 1,
++//     bit 6 ├óÔÇáÔÇÖ host elem 2, bit 7 ├óÔÇáÔÇÖ host elem 3
++//   Low nibble (DDDD):  Destination/broadcast mask ├óÔéČÔÇŁ bit i selects host element i
  //
 -// 0xEF = 0b11101111: Dot product of elements y,z,w (bits 765 set), result to all (bits 3210 set)
 -//        This computes dot(yzw) due to guest->host vector element reversal.
@@ -408,7 +461,7 @@ index cbdd7f7..5b8fc54 100644
  bool build_vmsum3fp128(BuilderContext& ctx) {
 -  // 3-element dot product accounting for guest->host vector element reversal
 -  // 0xEF = dot(yzw) with result broadcast to all elements (see constants doc)
-+  // 3-element dot product (PPC elements 0, 1, 2 â€” excludes element 3).
++  // 3-element dot product (PPC elements 0, 1, 2 ├óÔéČÔÇŁ excludes element 3).
 +  // In the byte-reversed host convention:
 +  //   PPC element 0 = host element 3
 +  //   PPC element 1 = host element 2
@@ -418,8 +471,8 @@ index cbdd7f7..5b8fc54 100644
 +  //
 +  // SSE _mm_dp_ps imm8 layout (per Intel SDM and SIMDE implementation):
 +  //   bits [7:4] = source/sum mask: bit (i+4) selects host element i
-+  //     bit 4 â†’ host elem 0, bit 5 â†’ host elem 1,
-+  //     bit 6 â†’ host elem 2, bit 7 â†’ host elem 3
++  //     bit 4 ├óÔÇáÔÇÖ host elem 0, bit 5 ├óÔÇáÔÇÖ host elem 1,
++  //     bit 6 ├óÔÇáÔÇÖ host elem 2, bit 7 ├óÔÇáÔÇÖ host elem 3
 +  //   bits [3:0] = destination/broadcast mask: bit i selects host element i
 +  //
 +  // To sum host elements 1,2,3 (PPC 2,1,0) and exclude host element 0 (PPC 3):
@@ -450,9 +503,9 @@ index cbdd7f7..5b8fc54 100644
  //=============================================================================
  
  bool build_vpkshus(BuilderContext& ctx) {
-+  // vpkshus vD, vA, vB: pack all 8 signed halfwords of vA â†’ unsigned bytes
-+  // [0..7], all 8 of vB â†’ unsigned bytes [8..15], unsigned saturate.
-+  // x86 packus_epi16(a,b): a[0..7]â†’result[0..7], b[0..7]â†’result[8..15].
++  // vpkshus vD, vA, vB: pack all 8 signed halfwords of vA ├óÔÇáÔÇÖ unsigned bytes
++  // [0..7], all 8 of vB ├óÔÇáÔÇÖ unsigned bytes [8..15], unsigned saturate.
++  // x86 packus_epi16(a,b): a[0..7]├óÔÇáÔÇÖresult[0..7], b[0..7]├óÔÇáÔÇÖresult[8..15].
 +  // With byte reversal: PPC vA hw[i] = host vA hw[7-i].
 +  // PPC result stored reversed: host[0..7] = PPC[8..15] = sat(vB),
 +  // host[8..15] = PPC[0..7] = sat(vA). So packus(vB, vA).
@@ -562,7 +615,7 @@ index cbdd7f7..5b8fc54 100644
  bool build_vpkshss(BuilderContext& ctx) {
 -  // Vector Pack Signed Halfword Signed Saturate
 +  // Vector Pack Signed Halfword Signed Saturate - pack all 8 halfwords
-+  // packs_epi16(a,b): aâ†’[0..7], bâ†’[8..15]. Swap for byte reversal.
++  // packs_epi16(a,b): a├óÔÇáÔÇÖ[0..7], b├óÔÇáÔÇÖ[8..15]. Swap for byte reversal.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.s8, "
 -      "simde_mm_packs_epi16(simde_mm_load_si128((simde__m128i*){}.s16), "
@@ -578,7 +631,7 @@ index cbdd7f7..5b8fc54 100644
  bool build_vpkswss(BuilderContext& ctx) {
 -  // Vector Pack Signed Word Signed Saturate
 +  // Vector Pack Signed Word Signed Saturate - pack all 4 words
-+  // packs_epi32(a,b): aâ†’[0..3], bâ†’[4..7]. Swap for byte reversal.
++  // packs_epi32(a,b): a├óÔÇáÔÇÖ[0..3], b├óÔÇáÔÇÖ[4..7]. Swap for byte reversal.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.s16, "
 -      "simde_mm_packs_epi32(simde_mm_load_si128((simde__m128i*){}.s32), "
@@ -594,7 +647,7 @@ index cbdd7f7..5b8fc54 100644
  bool build_vpkswus(BuilderContext& ctx) {
 -  // Vector Pack Signed Word Unsigned Saturate
 +  // Vector Pack Signed Word Unsigned Saturate - pack all 4 words
-+  // packus_epi32(a,b): aâ†’[0..3], bâ†’[4..7]. Swap for byte reversal.
++  // packus_epi32(a,b): a├óÔÇáÔÇÖ[0..3], b├óÔÇáÔÇÖ[4..7]. Swap for byte reversal.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.u16, "
 -      "simde_mm_packus_epi32(simde_mm_load_si128((simde__m128i*){}.s32), "
@@ -1240,19 +1293,28 @@ index dd321a5..50fc6a6 100644
      path_ = Path::kHostRenderTargets;
    } else if (REXCVAR_GET(render_target_path_d3d12) == "rov") {
 diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
-index 2be0e8e..38a8cd8 100644
+index 2be0e8e..b208519 100644
 --- a/src/graphics/d3d12/texture_cache.cpp
 +++ b/src/graphics/d3d12/texture_cache.cpp
-@@ -14,6 +14,8 @@
+@@ -13,11 +13,17 @@
+ #include <array>
  #include <cfloat>
  #include <cstddef>
++#include <cstdio>
  #include <cstring>
++#include <filesystem>
++#include <set>
 +#include <vector>
 +
  #include <memory>
  #include <utility>
  
-@@ -657,6 +659,42 @@ void D3D12TextureCache::ClearCache() {
+ #include <rex/assert.h>
++#include <rex/cvar.h>
+ #include <rex/dbg.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/shared_memory.h>
+@@ -657,6 +663,42 @@ void D3D12TextureCache::ClearCache() {
  void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
    TextureCache::BeginSubmission(new_submission_index);
  
@@ -1295,7 +1357,7 @@ index 2be0e8e..38a8cd8 100644
    // ExecuteCommandLists is a full UAV and aliasing barrier.
    if (IsDrawResolutionScaled()) {
      size_t scaled_resolve_buffer_count = GetScaledResolveBufferCount();
-@@ -742,6 +780,14 @@ void D3D12TextureCache::RequestTextures(uint32_t used_texture_mask) {
+@@ -742,6 +784,14 @@ void D3D12TextureCache::RequestTextures(uint32_t used_texture_mask) {
      if (!binding) {
        continue;
      }
@@ -1310,7 +1372,7 @@ index 2be0e8e..38a8cd8 100644
      D3D12Texture* binding_texture = static_cast<D3D12Texture*>(binding->texture);
      if (binding_texture != nullptr) {
        // Will be referenced by the command list, so mark as used.
-@@ -937,6 +983,35 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
+@@ -937,6 +987,35 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
    parameters.clamp_x = NormalizeClampMode(fetch_clamp_x);
    parameters.clamp_y = NormalizeClampMode(fetch_clamp_y);
    parameters.clamp_z = NormalizeClampMode(fetch_clamp_z);
@@ -1346,7 +1408,7 @@ index 2be0e8e..38a8cd8 100644
    if (xenos::ClampModeUsesBorder(parameters.clamp_x) ||
        xenos::ClampModeUsesBorder(parameters.clamp_y) ||
        xenos::ClampModeUsesBorder(parameters.clamp_z)) {
-@@ -991,7 +1066,7 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
+@@ -991,7 +1070,7 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
    return parameters;
  }
  
@@ -1355,7 +1417,7 @@ index 2be0e8e..38a8cd8 100644
                                       D3D12_CPU_DESCRIPTOR_HANDLE handle) const {
    D3D12_SAMPLER_DESC desc;
    if (parameters.aniso_filter != xenos::AnisoFilter::kDisabled) {
-@@ -1077,6 +1152,14 @@ void D3D12TextureCache::WriteSampler(SamplerParameters parameters,
+@@ -1077,6 +1156,14 @@ void D3D12TextureCache::WriteSampler(SamplerParameters parameters,
      // Maximum mip level is in the texture resource itself.
      desc.MaxLOD = FLT_MAX;
    }
@@ -1370,7 +1432,7 @@ index 2be0e8e..38a8cd8 100644
    ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
    device->CreateSampler(&desc, handle);
  }
-@@ -1343,6 +1426,14 @@ void D3D12TextureCache::CreateCurrentScaledResolveRangeUintPow2SRV(
+@@ -1343,6 +1430,14 @@ void D3D12TextureCache::CreateCurrentScaledResolveRangeUintPow2SRV(
    size_t buffer_index = GetCurrentScaledResolveBufferIndex();
    const ScaledResolveVirtualBuffer* buffer = scaled_resolve_2gb_buffers_[buffer_index].get();
    assert_not_null(buffer);
@@ -1385,7 +1447,7 @@ index 2be0e8e..38a8cd8 100644
    ui::d3d12::util::CreateBufferTypedSRV(
        command_processor_.GetD3D12Provider().GetDevice(), handle, buffer->resource(),
        ui::d3d12::util::GetUintPow2DXGIFormat(element_size_bytes_pow2),
-@@ -1357,6 +1448,14 @@ void D3D12TextureCache::CreateCurrentScaledResolveRangeUintPow2UAV(
+@@ -1357,6 +1452,14 @@ void D3D12TextureCache::CreateCurrentScaledResolveRangeUintPow2UAV(
    size_t buffer_index = GetCurrentScaledResolveBufferIndex();
    const ScaledResolveVirtualBuffer* buffer = scaled_resolve_2gb_buffers_[buffer_index].get();
    assert_not_null(buffer);
@@ -1400,9 +1462,11 @@ index 2be0e8e..38a8cd8 100644
    ui::d3d12::util::CreateBufferTypedUAV(
        command_processor_.GetD3D12Provider().GetDevice(), handle, buffer->resource(),
        ui::d3d12::util::GetUintPow2DXGIFormat(element_size_bytes_pow2),
-@@ -1597,6 +1696,33 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1596,7 +1699,35 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+   uint32_t bytes_per_block = guest_format_info->bytes_per_block();
    uint32_t level_first = load_base ? 0 : 1;
    uint32_t level_last = load_mips ? texture_key.mip_max_level : 0;
++
    assert_true(level_first <= level_last);
 +
 +  // Detect 4:2:0 Chroma planes (768x384 k_8). VP6 chroma is packed at a
@@ -1434,7 +1498,7 @@ index 2be0e8e..38a8cd8 100644
    uint32_t level_packed = guest_layout.packed_level;
    uint32_t level_stored_first = std::min(level_first, level_packed);
    uint32_t level_stored_last = std::min(level_last, level_packed);
-@@ -1688,13 +1814,396 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1688,13 +1819,396 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      (is_base ? host_slice_size_base : host_slice_sizes_mips[level]) = level_host_slice_size;
      copy_buffer_size += level_host_slice_size * array_size;
    }
@@ -1531,7 +1595,7 @@ index 2be0e8e..38a8cd8 100644
 +      // CRITICAL: The upload buffer must be kept alive until the GPU completes
 +      // the CopyTextureRegion. A local ComPtr would be destroyed when the
 +      // function returns, but the deferred command list hasn't been executed
-+      // yet â€” causing a use-after-free crash in the GPU driver (0xC0000005 in
++      // yet ├óÔéČÔÇŁ causing a use-after-free crash in the GPU driver (0xC0000005 in
 +      // nvwgf2umx.dll). The buffer is stored in pending_linear_upload_buffers_
 +      // and released in BeginSubmission once the GPU confirms completion.
 +
@@ -1551,7 +1615,7 @@ index 2be0e8e..38a8cd8 100644
 +      if (guest_ram_ptr == nullptr) {
 +        REXGPU_ERROR(
 +            "[GPU Linear K8 CRITICAL] TranslatePhysicalForDebug returned null "
-+            "for guest_address=0x{:X} â€” bypassing chroma upload",
++            "for guest_address=0x{:X} ├óÔéČÔÇŁ bypassing chroma upload",
 +            guest_address);
 +        // Transition texture to SRV anyway so the pipeline doesn't stall.
 +        command_processor_.PushTransitionBarrier(
@@ -1587,7 +1651,7 @@ index 2be0e8e..38a8cd8 100644
 +      if (FAILED(hr_create)) {
 +        REXGPU_ERROR(
 +            "[GPU Linear K8 CRITICAL] CreateCommittedResource failed: "
-+            "HRESULT=0x{:08X} size={} â€” bypassing chroma upload",
++            "HRESULT=0x{:08X} size={} ├óÔéČÔÇŁ bypassing chroma upload",
 +            uint32_t(hr_create), uint64_t(host_slice_size_base));
 +        command_processor_.PushTransitionBarrier(
 +            texture_resource,
@@ -1613,7 +1677,7 @@ index 2be0e8e..38a8cd8 100644
 +      if (FAILED(hr_map) || mapped_dst == nullptr) {
 +        REXGPU_ERROR(
 +            "[GPU Linear K8 CRITICAL] Upload buffer Map failed: "
-+            "HRESULT=0x{:08X} mapped_ptr={:p} â€” bypassing chroma upload",
++            "HRESULT=0x{:08X} mapped_ptr={:p} ├óÔéČÔÇŁ bypassing chroma upload",
 +            uint32_t(hr_map), static_cast<void*>(mapped_dst));
 +        command_processor_.PushTransitionBarrier(
 +            texture_resource,
@@ -1628,8 +1692,8 @@ index 2be0e8e..38a8cd8 100644
 +      }
 +
 +      // CPU row-by-row strided memcpy:
-+      //   src: guest_ram_ptr + (row * 640)   â€” 640 active bytes
-+      //   dst: mapped_dst   + (row * 768)   â€” 768-byte host-aligned row
++      //   src: guest_ram_ptr + (row * 640)   ├óÔéČÔÇŁ 640 active bytes
++      //   dst: mapped_dst   + (row * 768)   ├óÔéČÔÇŁ 768-byte host-aligned row
 +      //   padding: 128 bytes set to 0x80 (neutral chroma)
 +      uint32_t padding_bytes = host_row_pitch - guest_row_pitch;
 +      for (uint32_t row = 0; row < active_height; ++row) {
@@ -1639,14 +1703,14 @@ index 2be0e8e..38a8cd8 100644
 +        std::memset(dst_row + guest_row_pitch, 0x80, padding_bytes);
 +      }
 +
-+      // Unmap the upload buffer (no dirty range needed â€” full write).
++      // Unmap the upload buffer (no dirty range needed ├óÔéČÔÇŁ full write).
 +      upload_buffer->Unmap(0, nullptr);
 +
 +      // Single hardware CopyTextureRegion from the upload buffer to the
 +      // host D3D12 texture resource.
 +      // Footprint.Width must equal the texture resource width (768 for chroma),
 +      // NOT the active width (640). D3D12 CopyTextureRegion only copies
-+      // Footprint.Width pixels per row from the source â€” if Width < texture
++      // Footprint.Width pixels per row from the source ├óÔéČÔÇŁ if Width < texture
 +      // width, the remaining destination pixels are NOT overwritten, leaving
 +      // stale compute-untiled data that causes visual corruption.
 +      // The upload buffer already has 768 bytes per row (640 active + 128
@@ -1672,7 +1736,7 @@ index 2be0e8e..38a8cd8 100644
 +                                        &staging_source, nullptr);
 +
 +      // Keep the upload buffer alive until the GPU completes this submission.
-+      // The deferred command list hasn't been executed yet â€” releasing the
++      // The deferred command list hasn't been executed yet ├óÔéČÔÇŁ releasing the
 +      // buffer now would cause a use-after-free in the GPU driver.
 +      pending_linear_upload_buffers_.push_back(
 +          {upload_buffer, command_processor_.GetCurrentSubmission()});
@@ -1832,7 +1896,7 @@ index 2be0e8e..38a8cd8 100644
    // Begin loading.
    // May use different buffers for scaled base and mips, and also addressability
    // of more than 128 * 2^20 (2^D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP)
-@@ -1718,35 +2227,40 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1718,35 +2232,40 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      return false;
    }
    uint32_t descriptor_write_index = 0;
@@ -1901,7 +1965,7 @@ index 2be0e8e..38a8cd8 100644
  
    // Submit the copy buffer population commands.
  
-@@ -1757,8 +2271,8 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1757,8 +2276,8 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
    assert_true(texture_resolution_scale_y <= 7);
    load_constants.is_tiled_3d_endian_scale =
        uint32_t(texture_key.tiled) | (uint32_t(is_3d_tiling) << 1) |
@@ -1912,7 +1976,7 @@ index 2be0e8e..38a8cd8 100644
  
    // The loop is slices within levels because the base and the levels may need
    // different portions of the scaled resolve virtual address space to be
-@@ -1772,6 +2286,53 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1772,6 +2291,53 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
  
      uint32_t guest_address = (is_base ? texture_key.base_page : texture_key.mip_page) << 12;
  
@@ -1943,7 +2007,7 @@ index 2be0e8e..38a8cd8 100644
 +          uint64_t(host_slice_size_base), k8_chroma_640);
 +
 +      if (host_row_pitch == active_width) {
-+        // Flat copy â€” pitches match exactly.
++        // Flat copy ├óÔéČÔÇŁ pitches match exactly.
 +        command_list.D3DCopyBufferRegion(copy_buffer, 0,
 +                                         d3d12_shared_memory.GetBuffer(),
 +                                         guest_address,
@@ -1966,7 +2030,7 @@ index 2be0e8e..38a8cd8 100644
      // Set up the base or mips source, also making it accessible if loading from
      // scaled resolve memory.
      if (texture_resolution_scaled && (is_base || !scaled_mips_source_set_up)) {
-@@ -1815,6 +2376,11 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1815,6 +2381,11 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
        assert_zero(level_guest_pitch & (xenos::kTextureTileWidthHeight - 1));
      }
      load_constants.guest_pitch_aligned = level_guest_pitch;
@@ -1978,7 +2042,7 @@ index 2be0e8e..38a8cd8 100644
      load_constants.guest_z_stride_block_rows_aligned = level_guest_layout.z_slice_stride_block_rows;
      assert_true(!is_3d_tiling || !(load_constants.guest_z_stride_block_rows_aligned &
                                     (xenos::kTextureTileWidthHeight - 1)));
-@@ -1834,6 +2400,11 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1834,6 +2405,11 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      }
      load_constants.size_blocks[0] =
          (level_width + (block_width - 1)) / block_width * texture_resolution_scale_x;
@@ -1990,7 +2054,7 @@ index 2be0e8e..38a8cd8 100644
      load_constants.size_blocks[1] =
          (level_height + (block_height - 1)) / block_height * texture_resolution_scale_y;
      load_constants.size_blocks[2] = level_depth;
-@@ -1853,6 +2424,17 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1853,6 +2429,17 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      load_constants.host_offset = uint32_t(level_host_slice_layout.Offset);
      load_constants.host_pitch = level_host_slice_layout.Footprint.RowPitch;
  
@@ -2008,7 +2072,7 @@ index 2be0e8e..38a8cd8 100644
      command_list.D3DSetComputeRoot32BitConstants(0, sizeof(load_constants) / sizeof(uint32_t),
                                                   &load_constants, 0);
  
-@@ -1871,6 +2453,13 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1871,6 +2458,13 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
        assert_true(copy_buffer_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
        command_processor_.SubmitBarriers();
        command_list.D3DDispatch(group_count_x, group_count_y, load_constants.size_blocks[2]);
@@ -2022,7 +2086,7 @@ index 2be0e8e..38a8cd8 100644
        load_constants.guest_offset += level_array_slice_stride_bytes_scaled;
        load_constants.host_offset += host_slice_size;
      }
-@@ -1930,6 +2519,79 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1930,6 +2524,79 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      }
    }
  
@@ -2102,7 +2166,7 @@ index 2be0e8e..38a8cd8 100644
    command_processor_.ReleaseScratchGPUBuffer(copy_buffer, copy_buffer_state);
  
    return true;
-@@ -1946,6 +2608,7 @@ void D3D12TextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask)
+@@ -1946,6 +2613,7 @@ void D3D12TextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask)
      if (!binding) {
        continue;
      }
@@ -2110,7 +2174,7 @@ index 2be0e8e..38a8cd8 100644
      if (IsSignedVersionSeparateForFormat(binding->key)) {
        if (binding->texture && texture_util::IsAnySignNotSigned(binding->swizzled_signs)) {
          d3d12_binding.descriptor_index =
-@@ -1995,6 +2658,10 @@ ID3D12Resource* D3D12TextureCache::D3D12Texture::GetOrCreate3DAs2DResource(
+@@ -1995,6 +2663,10 @@ ID3D12Resource* D3D12TextureCache::D3D12Texture::GetOrCreate3DAs2DResource(
    desc.Alignment = 0;
    desc.Width = key().GetWidth();
    desc.Height = key().GetHeight();
@@ -2121,7 +2185,7 @@ index 2be0e8e..38a8cd8 100644
    desc.DepthOrArraySize = 1;
    desc.MipLevels = 1;
    desc.Format = d3d12_cache.GetDXGIResourceFormat(key());
-@@ -2068,6 +2735,12 @@ uint32_t D3D12TextureCache::FindOrCreateTextureDescriptor(D3D12Texture& texture,
+@@ -2068,6 +2740,12 @@ uint32_t D3D12TextureCache::FindOrCreateTextureDescriptor(D3D12Texture& texture,
    } else {
      desc.Format = GetDXGIUnormFormat(texture_key);
    }
@@ -2242,7 +2306,7 @@ index a7d508a..c3a15ea 100644
  #include <rex/graphics/pipeline/render_target/cache.h>
  #include <rex/graphics/pipeline/shader/dxbc_translator.h>
 diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
-index 76f5600..497854d 100644
+index 76f5600..8a8c6b5 100644
 --- a/src/graphics/pipeline/texture/cache.cpp
 +++ b/src/graphics/pipeline/texture/cache.cpp
 @@ -45,7 +45,7 @@ REXCVAR_DEFINE_INT32(texture_cache_memory_limit_soft_lifetime, 30, "GPU",
@@ -2362,7 +2426,7 @@ index 76f5600..497854d 100644
 +    // or evicted frequently. Force a rebind so the SRV descriptor always points
 +    // to the current host D3D12Texture resource, not a destroyed previous one.
 +    // Generalized to all linear (untiled) k_8/k_8_8 textures, not just known
-+    // VP6 dimensions â€” software video decoders write linear YUV planes that
++    // VP6 dimensions ├óÔéČÔÇŁ software video decoders write linear YUV planes that
 +    // bypass the Xenos GPU tiling hardware.
 +    bool streaming_linear_video =
 +        !binding.key.tiled &&
@@ -2769,7 +2833,7 @@ index bd43109..d3f9791 100644
  
  PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
 diff --git a/src/system/mmio_handler.cpp b/src/system/mmio_handler.cpp
-index 2b93005..7f682f5 100644
+index 2b93005..144e36b 100644
 --- a/src/system/mmio_handler.cpp
 +++ b/src/system/mmio_handler.cpp
 @@ -13,6 +13,11 @@
@@ -2910,43 +2974,51 @@ index 2b93005..7f682f5 100644
    }
    decoded_out.length = i;
    return true;
-@@ -417,6 +519,36 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
+@@ -417,8 +519,42 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
      // The address is not found within any range, so either a write watch or an
      // actual access violation.
      if (access_violation_callback_) {
-+      auto rip = ex->pc();
-+      // Log diagnostic info about the faulting instruction and guest address.
-+      bool is_null_ptr_fault = (fault_guest_virtual_address < 0x100000u);
-+      if (is_null_ptr_fault) {
-+        REXLOG_ERROR("Null-pointer {} at guest 0x{:08X}",
-+                    is_write ? "write" : "read", fault_guest_virtual_address);
-+      }
-+      REXLOG_ERROR("Access violation faulting PC: 0x{:016X}", (uint64_t)rip);
-+#if REX_PLATFORM_WIN32
-+      // Resolve module base for the faulting PC so we can compute RVA
-+      HMODULE hMod = nullptr;
-+      if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-+                             (LPCWSTR)rip, &hMod) && hMod) {
-+        auto base = reinterpret_cast<uintptr_t>(hMod);
-+        REXLOG_ERROR("  module base: 0x{:016X} RVA: 0x{:X}", (uint64_t)base, (uint32_t)((uintptr_t)rip - base));
-+      }
-+      // Try to get a few host return addresses for stack identification
-+      void* frames[16];
-+      int n = CaptureStackBackTrace(0, 16, frames, nullptr);
-+      for (int i = 0; i < n; i++) {
-+        HMODULE hMod2 = nullptr;
-+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-+                               (LPCWSTR)frames[i], &hMod2) && hMod2) {
-+          auto base2 = reinterpret_cast<uintptr_t>(hMod2);
-+          REXLOG_ERROR("  host frame [{}]: 0x{:016X} RVA: 0x{:X}", i, (uint64_t)(uintptr_t)frames[i], (uint32_t)((uintptr_t)frames[i] - base2));
-+        } else {
-+          REXLOG_ERROR("  host frame [{}]: 0x{:016X}", i, (uint64_t)(uintptr_t)frames[i]);
+-      return access_violation_callback_(std::move(lock), access_violation_callback_context_,
+-                                        fault_host_address, is_write);
++      // Call the access violation callback first. Write-watch triggers on
++      // GPU shared memory are expected and handled successfully ÔÇö only log
++      // diagnostic info when the callback fails to handle the violation.
++      bool handled = access_violation_callback_(std::move(lock),
++                                                access_violation_callback_context_,
++                                                fault_host_address, is_write);
++      if (!handled) {
++        auto rip = ex->pc();
++        bool is_null_ptr_fault = (fault_guest_virtual_address < 0x100000u);
++        if (is_null_ptr_fault) {
++          REXLOG_ERROR("Null-pointer {} at guest 0x{:08X}",
++                      is_write ? "write" : "read", fault_guest_virtual_address);
 +        }
-+      }
++        REXLOG_ERROR("Access violation faulting PC: 0x{:016X}", (uint64_t)rip);
++#if REX_PLATFORM_WIN32
++        HMODULE hMod = nullptr;
++        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                               (LPCWSTR)rip, &hMod) && hMod) {
++          auto base = reinterpret_cast<uintptr_t>(hMod);
++          REXLOG_ERROR("  module base: 0x{:016X} RVA: 0x{:X}", (uint64_t)base, (uint32_t)((uintptr_t)rip - base));
++        }
++        void* frames[16];
++        int n = CaptureStackBackTrace(0, 16, frames, nullptr);
++        for (int i = 0; i < n; i++) {
++          HMODULE hMod2 = nullptr;
++          if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                                 (LPCWSTR)frames[i], &hMod2) && hMod2) {
++            auto base2 = reinterpret_cast<uintptr_t>(hMod2);
++            REXLOG_ERROR("  host frame [{}]: 0x{:016X} RVA: 0x{:X}", i, (uint64_t)(uintptr_t)frames[i], (uint32_t)((uintptr_t)frames[i] - base2));
++          } else {
++            REXLOG_ERROR("  host frame [{}]: 0x{:016X}", i, (uint64_t)(uintptr_t)frames[i]);
++          }
++        }
 +#endif
-       return access_violation_callback_(std::move(lock), access_violation_callback_context_,
-                                         fault_host_address, is_write);
++      }
++      return handled;
      }
+     return false;
+   }
 diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
 index 76cc877..b0c4004 100644
 --- a/src/system/xmemory.cpp
@@ -3001,7 +3073,7 @@ index 76cc877..b0c4004 100644
    }
  
 diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
-index 306118e..fec5939 100644
+index 306118e..2543c5c 100644
 --- a/src/ui/d3d12/d3d12_presenter.cpp
 +++ b/src/ui/d3d12/d3d12_presenter.cpp
 @@ -33,6 +33,11 @@
@@ -3016,7 +3088,279 @@ index 306118e..fec5939 100644
  namespace rex::ui::d3d12 {
  
  // Generated with `xb buildshaders`.
-@@ -1155,9 +1160,25 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+@@ -56,6 +61,16 @@ D3D12Presenter::~D3D12Presenter() {
+   // From most likely the latest to most likely the earliest to be signaled, so
+   // just one sleep will likely be needed.
+   paint_context_.AwaitSwapChainUsageCompletion();
++  for (auto& handle : guest_output_shared_handles_) {
++    if (handle) { CloseHandle(handle); handle = nullptr; }
++  }
++  for (auto& copy : guest_output_shared_copy_resources_) {
++    copy.Reset();
++  }
++  guest_output_copy_cmd_list_.Reset();
++  guest_output_copy_cmd_allocator_.Reset();
++  guest_output_copy_fence_.Reset();
++  guest_output_shared_texture_ref_.Reset();
+   guest_output_resource_refresher_submission_tracker_.Shutdown();
+   ui_submission_tracker_.Shutdown();
+ #if defined(REX_HAS_FIDELITYFX_RUNTIME) && REX_HAS_FIDELITYFX_RUNTIME
+@@ -203,11 +218,12 @@ Surface::TypeFlags D3D12Presenter::GetSupportedSurfaceTypes() const {
+ }
+ 
+ bool D3D12Presenter::CaptureGuestOutput(RawImage& image_out) {
++  GuestOutputProperties properties;
+   Microsoft::WRL::ComPtr<ID3D12Resource> guest_output_resource;
+   {
+     uint32_t guest_output_mailbox_index;
+     std::unique_lock<std::mutex> guest_output_consumer_lock(
+-        ConsumeGuestOutput(guest_output_mailbox_index, nullptr, nullptr));
++        ConsumeGuestOutput(guest_output_mailbox_index, &properties, nullptr));
+     if (guest_output_mailbox_index != UINT32_MAX) {
+       guest_output_resource = guest_output_resources_[guest_output_mailbox_index].second;
+     }
+@@ -314,6 +330,8 @@ bool D3D12Presenter::CaptureGuestOutput(RawImage& image_out) {
+     REXLOG_ERROR("D3D12Presenter: Failed to map the guest output capture buffer");
+     return false;
+   }
++  image_out.display_aspect_ratio_x = properties.display_aspect_ratio_x;
++  image_out.display_aspect_ratio_y = properties.display_aspect_ratio_y;
+   image_out.width = uint32_t(texture_desc.Width);
+   image_out.height = uint32_t(texture_desc.Height);
+   image_out.stride = sizeof(uint32_t) * image_out.width;
+@@ -502,6 +520,11 @@ bool D3D12Presenter::RefreshGuestOutputImpl(
+       // in its own submission tracker timeline, safe to release here.
+       guest_output_resource_refresher_submission_tracker_.AwaitSubmissionCompletion(
+           guest_output_resource_ref.first);
++      if (guest_output_shared_handles_[mailbox_index]) {
++        CloseHandle(guest_output_shared_handles_[mailbox_index]);
++        guest_output_shared_handles_[mailbox_index] = nullptr;
++      }
++      guest_output_shared_copy_resources_[mailbox_index].Reset();
+       guest_output_resource_ref.second.Reset();
+     }
+   }
+@@ -519,10 +542,11 @@ bool D3D12Presenter::RefreshGuestOutputImpl(
+     guest_output_resource_new_desc.SampleDesc.Quality = 0;
+     guest_output_resource_new_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+     guest_output_resource_new_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+-    if (FAILED(device->CreateCommittedResource(
+-            &util::kHeapPropertiesDefault, provider_.GetHeapFlagCreateNotZeroed(),
+-            &guest_output_resource_new_desc, kGuestOutputInternalState, nullptr,
+-            IID_PPV_ARGS(&guest_output_resource_ref.second)))) {
++    HRESULT hr = device->CreateCommittedResource(
++        &util::kHeapPropertiesDefault, provider_.GetHeapFlagCreateNotZeroed(),
++        &guest_output_resource_new_desc, kGuestOutputInternalState, nullptr,
++        IID_PPV_ARGS(&guest_output_resource_ref.second));
++    if (FAILED(hr)) {
+       REXLOG_ERROR("D3D12Presenter: Failed to create the guest output {}x{} texture",
+                    frontbuffer_width, frontbuffer_height);
+       return false;
+@@ -540,6 +564,203 @@ bool D3D12Presenter::RefreshGuestOutputImpl(
+   return refresher_succeeded;
+ }
+ 
++bool D3D12Presenter::GetGuestOutputSharedTexture(GuestOutputSharedTexture& out) {
++  Microsoft::WRL::ComPtr<ID3D12Resource> guest_output_resource;
++  uint32_t mailbox_index = UINT32_MAX;
++  UINT64 submission_index = 0;
++  {
++    uint32_t idx;
++    std::unique_lock<std::mutex> lock(ConsumeGuestOutput(idx, nullptr, nullptr));
++    if (idx == UINT32_MAX) {
++      REXLOG_WARN("D3D12Presenter: GetGuestOutputSharedTexture - no guest output available");
++      return false;
++    }
++    mailbox_index = idx;
++    guest_output_resource = guest_output_resources_[idx].second;
++    submission_index = guest_output_resources_[idx].first;
++  }
++  if (!guest_output_resource) {
++    REXLOG_WARN("D3D12Presenter: GetGuestOutputSharedTexture - null resource at index {}", mailbox_index);
++    return false;
++  }
++
++  guest_output_resource_refresher_submission_tracker_.AwaitSubmissionCompletion(
++      submission_index);
++
++  D3D12_RESOURCE_DESC src_desc = guest_output_resource->GetDesc();
++  uint32_t width = uint32_t(src_desc.Width);
++  uint32_t height = src_desc.Height;
++
++  auto& shared_copy = guest_output_shared_copy_resources_[mailbox_index];
++  bool need_recreate = false;
++  if (shared_copy) {
++    D3D12_RESOURCE_DESC copy_desc = shared_copy->GetDesc();
++    if (copy_desc.Width != src_desc.Width || copy_desc.Height != src_desc.Height) {
++      shared_copy.Reset();
++      if (guest_output_shared_handles_[mailbox_index]) {
++        CloseHandle(guest_output_shared_handles_[mailbox_index]);
++        guest_output_shared_handles_[mailbox_index] = nullptr;
++      }
++      need_recreate = true;
++    }
++  } else {
++    need_recreate = true;
++  }
++
++  if (need_recreate) {
++    ID3D12Device* device = provider_.GetDevice();
++    D3D12_RESOURCE_DESC copy_desc;
++    copy_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++    copy_desc.Alignment = 0;
++    copy_desc.Width = width;
++    copy_desc.Height = height;
++    copy_desc.DepthOrArraySize = 1;
++    copy_desc.MipLevels = 1;
++    copy_desc.Format = kGuestOutputFormat;
++    copy_desc.SampleDesc.Count = 1;
++    copy_desc.SampleDesc.Quality = 0;
++    copy_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
++    copy_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
++    HRESULT hr = device->CreateCommittedResource(
++        &util::kHeapPropertiesDefault,
++        D3D12_HEAP_FLAG_SHARED,
++        &copy_desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
++        IID_PPV_ARGS(&shared_copy));
++    if (FAILED(hr)) {
++      REXLOG_ERROR("D3D12Presenter: Failed to create shared copy {}x{} (hr=0x{:08X})",
++                   width, height, uint32_t(hr));
++      return false;
++    }
++  }
++
++  if (!guest_output_copy_cmd_allocator_) {
++    ID3D12Device* device = provider_.GetDevice();
++    HRESULT hr = device->CreateCommandAllocator(
++        D3D12_COMMAND_LIST_TYPE_DIRECT,
++        IID_PPV_ARGS(&guest_output_copy_cmd_allocator_));
++    if (FAILED(hr)) {
++      REXLOG_ERROR("D3D12Presenter: Failed to create copy cmd allocator (hr=0x{:08X})",
++                   uint32_t(hr));
++      return false;
++    }
++    hr = device->CreateCommandList(
++        0, D3D12_COMMAND_LIST_TYPE_DIRECT,
++        guest_output_copy_cmd_allocator_.Get(), nullptr,
++        IID_PPV_ARGS(&guest_output_copy_cmd_list_));
++    if (FAILED(hr)) {
++      REXLOG_ERROR("D3D12Presenter: Failed to create copy cmd list (hr=0x{:08X})",
++                   uint32_t(hr));
++      return false;
++    }
++    hr = device->CreateFence(
++        0, D3D12_FENCE_FLAG_SHARED,
++        IID_PPV_ARGS(&guest_output_copy_fence_));
++    if (FAILED(hr)) {
++      REXLOG_ERROR("D3D12Presenter: Failed to create copy fence (hr=0x{:08X})",
++                   uint32_t(hr));
++      return false;
++    }
++  }
++
++  guest_output_copy_cmd_allocator_->Reset();
++  guest_output_copy_cmd_list_->Reset(
++      guest_output_copy_cmd_allocator_.Get(), nullptr);
++
++  D3D12_RESOURCE_BARRIER barriers[2];
++  UINT barrier_count = 0;
++
++  barriers[barrier_count].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++  barriers[barrier_count].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
++  barriers[barrier_count].Transition.pResource = guest_output_resource.Get();
++  barriers[barrier_count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++  barriers[barrier_count].Transition.StateBefore = kGuestOutputInternalState;
++  barriers[barrier_count].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++  barrier_count++;
++
++  barriers[barrier_count].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++  barriers[barrier_count].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
++  barriers[barrier_count].Transition.pResource = shared_copy.Get();
++  barriers[barrier_count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++  barriers[barrier_count].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
++  barriers[barrier_count].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
++  barrier_count++;
++
++  guest_output_copy_cmd_list_->ResourceBarrier(barrier_count, barriers);
++  guest_output_copy_cmd_list_->CopyResource(
++      shared_copy.Get(), guest_output_resource.Get());
++
++  D3D12_RESOURCE_BARRIER restore_barrier;
++  restore_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++  restore_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
++  restore_barrier.Transition.pResource = guest_output_resource.Get();
++  restore_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++  restore_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
++  restore_barrier.Transition.StateAfter = kGuestOutputInternalState;
++  guest_output_copy_cmd_list_->ResourceBarrier(1, &restore_barrier);
++
++  D3D12_RESOURCE_BARRIER copy_to_shared_barrier;
++  copy_to_shared_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++  copy_to_shared_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
++  copy_to_shared_barrier.Transition.pResource = shared_copy.Get();
++  copy_to_shared_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++  copy_to_shared_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++  copy_to_shared_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
++  guest_output_copy_cmd_list_->ResourceBarrier(1, &copy_to_shared_barrier);
++
++  guest_output_copy_cmd_list_->Close();
++  ID3D12CommandList* cmd_list = guest_output_copy_cmd_list_.Get();
++  provider_.GetDirectQueue()->ExecuteCommandLists(1, &cmd_list);
++
++  guest_output_copy_fence_value_++;
++  provider_.GetDirectQueue()->Signal(
++      guest_output_copy_fence_.Get(), guest_output_copy_fence_value_);
++
++  while (guest_output_copy_fence_->GetCompletedValue() <
++         guest_output_copy_fence_value_) {
++    Sleep(0);
++  }
++
++  if (!guest_output_shared_handles_[mailbox_index]) {
++    Microsoft::WRL::ComPtr<ID3D12Device1> device1;
++    HRESULT hr = provider_.GetDevice()->QueryInterface(IID_PPV_ARGS(&device1));
++    if (FAILED(hr)) {
++      REXLOG_ERROR("D3D12Presenter: QueryInterface(ID3D12Device1) failed (hr=0x{:08X})",
++                   uint32_t(hr));
++      return false;
++    }
++    SECURITY_ATTRIBUTES sa{};
++    sa.nLength = sizeof(sa);
++    sa.lpSecurityDescriptor = nullptr;
++    sa.bInheritHandle = TRUE;
++    HANDLE handle = nullptr;
++    hr = device1->CreateSharedHandle(
++            shared_copy.Get(), &sa,
++            GENERIC_ALL, nullptr, &handle);
++    if (FAILED(hr)) {
++      REXLOG_ERROR("D3D12Presenter: ID3D12Device1::CreateSharedHandle failed (hr=0x{:08X})",
++                   uint32_t(hr));
++      return false;
++    }
++    guest_output_shared_handles_[mailbox_index] = handle;
++  }
++
++  LUID adapter_luid = provider_.GetDevice()->GetAdapterLuid();
++
++  out.handle = guest_output_shared_handles_[mailbox_index];
++  out.width = width;
++  out.height = height;
++  out.adapter_luid_low = uint32_t(adapter_luid.LowPart);
++  out.adapter_luid_high = int32_t(adapter_luid.HighPart);
++
++  guest_output_shared_texture_ref_ = guest_output_resource;
++
++  return true;
++}
++
++void D3D12Presenter::ReleaseGuestOutputSharedTexture() {
++  guest_output_shared_texture_ref_.Reset();
++}
++
+ void D3D12Presenter::PaintContext::DestroySwapChain() {
+   if (!swap_chain) {
+     return;
+@@ -1155,9 +1376,25 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
    // fullscreen is ever used in, the allow tearing flag must not be passed in
    // fullscreen, but DXGI fullscreen is largely unneeded with the flip
    // presentation model used in Direct3D 12).
@@ -3059,3 +3403,9 @@ index 7360ed9..383b1ba 100644
    uint32_t last_acquired_and_ready =
        guest_output_mailbox_acquired_and_ready_.load(std::memory_order_relaxed);
    // Desired acquired = current acquired (changed only by the consumers).
+diff --git a/thirdparty/libmspack b/thirdparty/libmspack
+--- a/thirdparty/libmspack
++++ b/thirdparty/libmspack
+@@ -1 +1 @@
+-Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837
++Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837-dirty
