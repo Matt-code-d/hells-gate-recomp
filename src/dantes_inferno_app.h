@@ -16,6 +16,11 @@
 #include <cstring>
 #include <cstdlib>
 
+#ifdef DANTESINFERNO_NATIVE_RENDERER
+#include "native_renderer/native_presenter.h"
+#include <memory>
+#endif
+
 REXCVAR_DEFINE_DOUBLE(time_scalar, 1.0, "Gameplay",
                       "Guest time scaling factor (1.0 = normal, 50.0 = fast-forward)");
 
@@ -179,15 +184,20 @@ class DantesInfernoApp : public rex::ReXApp {
     double target_aspect = REXCVAR_GET(ultrawide_target_aspect);
     if (target_aspect > 0.0) {
       g_ultrawide_target_aspect = static_cast<float>(target_aspect);
-      if (target_aspect >= 1.7778) {
-        rex::cvar::SetFlagByName("present_letterbox", "false");
-        REXLOG_INFO("ULTRAWIDE: target_aspect={:.4f}, present_letterbox disabled",
-                    target_aspect);
-      } else {
-        rex::cvar::SetFlagByName("present_letterbox", "true");
-        REXLOG_INFO("ULTRAWIDE: target_aspect={:.4f}, present_letterbox enabled",
-                    target_aspect);
-      }
+
+      uint32_t target_width = static_cast<uint32_t>(target_aspect * 720.0 + 0.5);
+      uint32_t video_mode_w = std::min(target_width, 4095u);
+      uint32_t window_w = std::min(target_width, 8192u);
+      rex::cvar::SetFlagByName("video_mode_width", std::to_string(video_mode_w));
+      rex::cvar::SetFlagByName("video_mode_height", "720");
+      rex::cvar::SetFlagByName("window_width", std::to_string(window_w));
+      rex::cvar::SetFlagByName("window_height", "720");
+
+      REXLOG_INFO(
+          "ULTRAWIDE: target_aspect={:.4f}, window={}x720, video_mode={}x720, "
+          "present_letterbox={}",
+          target_aspect, window_w, video_mode_w,
+          rex::cvar::Query<bool>("present_letterbox"));
     } else {
       REXLOG_INFO("ULTRAWIDE: disabled (target_aspect={:.4f})", target_aspect);
     }
@@ -214,11 +224,6 @@ class DantesInfernoApp : public rex::ReXApp {
         [](std::string_view, std::string_view new_value) {
           double aspect = std::stod(std::string(new_value));
           g_ultrawide_target_aspect = static_cast<float>(aspect);
-          if (aspect >= 1.7778) {
-            rex::cvar::SetFlagByName("present_letterbox", "false");
-          } else {
-            rex::cvar::SetFlagByName("present_letterbox", "true");
-          }
         });
 
     rex::ui::RegisterBind("bind_exit_game", "Alt+F4",
@@ -256,9 +261,34 @@ class DantesInfernoApp : public rex::ReXApp {
       rex::chrono::Clock::set_guest_time_scalar(target);
       rex::cvar::SetFlagByName("vsync", fast ? "true" : "false");
     });
+
+#ifdef DANTESINFERNO_NATIVE_RENDERER
+    if (rex::cvar::Query<bool>("use_native_presenter")) {
+      auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
+      auto* graphics_system = static_cast<rex::graphics::GraphicsSystem*>(gfx_sys);
+      auto* rex_presenter = graphics_system ? graphics_system->presenter() : nullptr;
+      if (rex_presenter && window()) {
+        native_presenter_ = std::make_unique<dante::NativePresenter>();
+        uint32_t w = window()->GetDesiredLogicalWidth();
+        uint32_t h = window()->GetDesiredLogicalHeight();
+        if (w == 0) w = 1280;
+        if (h == 0) h = 720;
+        if (!native_presenter_->initialize(rex_presenter, window(), w, h)) {
+          REXLOG_WARN("Native presenter init failed; staying on D3D12 path");
+          native_presenter_.reset();
+        }
+      } else {
+        REXLOG_WARN("use_native_presenter=1 but presenter/window unavailable");
+      }
+    }
+#endif
   }
 
   void OnShutdown() override {
+#ifdef DANTESINFERNO_NATIVE_RENDERER
+    native_presenter_.reset();
+#endif
+
     rex::ui::UnregisterBind("bind_fast_forward");
     rex::ui::UnregisterBind("bind_fps_overlay");
     rex::ui::UnregisterBind("bind_exit_game");
@@ -271,4 +301,7 @@ class DantesInfernoApp : public rex::ReXApp {
 
  private:
   std::unique_ptr<FpsOverlayDialog> fps_overlay_;
+#ifdef DANTESINFERNO_NATIVE_RENDERER
+  std::unique_ptr<dante::NativePresenter> native_presenter_;
+#endif
 };
