@@ -15,6 +15,8 @@ namespace DantesInferno.Launcher
         private GameConfig _config;
         private string _installDir;
         private bool _gameRunning;
+        private DisplayAspect _displayAspect;
+        private List<DisplayModeOption> _resolutionOptions;
 
         public MainWindow()
         {
@@ -95,6 +97,9 @@ namespace DantesInferno.Launcher
 
             if (string.IsNullOrWhiteSpace(_config.GameDataRoot))
                 _config.GameDataRoot = PathHelper.GetGameDataPath(_installDir);
+
+            _config.MigrateLegacySettings();
+            _displayAspect = DisplayOptions.DetectPrimaryAspect();
         }
 
         private void PopulateControls()
@@ -103,31 +108,30 @@ namespace DantesInferno.Launcher
             VersionText.Text = "Version: " + version.ToString();
             UpdateVersionText.Text = "Installed version: " + version.ToString();
 
-            ResScaleCombo.ItemsSource = new List<string>
-            {
-                "Original (720p)",
-                "2x (1440p)",
-                "3x (2160p / 4K)"
-            };
-            int scale = _config.ResolutionScale;
-            if (scale < 1) scale = 1;
-            if (scale > 3) scale = 3;
-            ResScaleCombo.SelectedIndex = scale - 1;
+            if (_displayAspect == null)
+                _displayAspect = DisplayOptions.DetectPrimaryAspect();
 
-            var aspectOptions = new List<KeyValuePair<string, string>>
+            DetectedDisplayText.Text = string.Format(CultureInfo.InvariantCulture,
+                "{0}x{1} detected ({2})",
+                _displayAspect.DetectedWidth, _displayAspect.DetectedHeight, _displayAspect.Name);
+
+            _resolutionOptions = DisplayOptions.BuildResolutionOptions(_displayAspect);
+            ResolutionCombo.ItemsSource = _resolutionOptions;
+            ResolutionCombo.DisplayMemberPath = "Label";
+            int scale = DisplayOptions.ClampScale(_config.ResolutionScale);
+            int scaleIndex = _resolutionOptions.FindIndex(o => o.Scale == scale);
+            ResolutionCombo.SelectedIndex = scaleIndex < 0 ? 0 : scaleIndex;
+
+            var rendererOptions = new List<KeyValuePair<string, string>>
             {
-                new KeyValuePair<string, string>("Native (16:9)", "native"),
-                new KeyValuePair<string, string>("21:9 (Ultrawide)", "2.3889"),
-                new KeyValuePair<string, string>("32:9 (Super Ultrawide)", "3.5556"),
-                new KeyValuePair<string, string>("16:10", "1.6"),
-                new KeyValuePair<string, string>("4:3", "1.3333"),
+                new KeyValuePair<string, string>("ReXGlue (D3D12)", DisplayOptions.RendererReXGlue),
+                new KeyValuePair<string, string>("Native (Vulkan, experimental)", DisplayOptions.RendererNative),
             };
-            AspectRatioCombo.ItemsSource = aspectOptions;
-            AspectRatioCombo.DisplayMemberPath = "Key";
-            AspectRatioCombo.SelectedValuePath = "Value";
-            string cfgAspect = _config.AspectRatio ?? "native";
-            var matched = aspectOptions.FirstOrDefault(o => o.Value == cfgAspect);
-            AspectRatioCombo.SelectedIndex = matched.Equals(default(KeyValuePair<string, string>)) ? 0 : aspectOptions.IndexOf(matched);
+            RendererCombo.ItemsSource = rendererOptions;
+            RendererCombo.DisplayMemberPath = "Key";
+            RendererCombo.SelectedValuePath = "Value";
+            string renderer = DisplayOptions.NormalizeRenderer(_config.Renderer);
+            RendererCombo.SelectedIndex = renderer == DisplayOptions.RendererNative ? 1 : 0;
 
             AAModeCombo.ItemsSource = new List<string> { "Off", "FXAA", "FXAA Extreme" };
             switch (_config.SwapPostEffect)
@@ -182,12 +186,14 @@ namespace DantesInferno.Launcher
 
         private void SaveSettingsToConfig()
         {
-            int scaleIdx = ResScaleCombo.SelectedIndex;
-            if (scaleIdx < 0) scaleIdx = 0;
-            _config.ResolutionScale = scaleIdx + 1;
+            var selectedMode = ResolutionCombo.SelectedItem as DisplayModeOption;
+            _config.ResolutionScale = selectedMode != null
+                ? DisplayOptions.ClampScale(selectedMode.Scale)
+                : DisplayOptions.MinScale;
 
-            var aspectPair = AspectRatioCombo.SelectedItem as KeyValuePair<string, string>?;
-            _config.AspectRatio = aspectPair?.Value ?? "native";
+            var rendererPair = RendererCombo.SelectedItem as KeyValuePair<string, string>?;
+            _config.Renderer = DisplayOptions.NormalizeRenderer(
+                rendererPair.HasValue ? rendererPair.Value.Value : null);
 
             int aaIdx = AAModeCombo.SelectedIndex;
             switch (aaIdx)
@@ -241,42 +247,16 @@ namespace DantesInferno.Launcher
             SaveSettingsToConfig();
             _config.Save();
 
-            bool loggingEnabled = !_config.LogLevel.Equals("off", StringComparison.OrdinalIgnoreCase);
-
             ClearOldLogs();
 
-            var args = new List<string>();
-            args.Add(string.Format("--game_data_root=\"{0}\"", gameData));
+            string arguments = DisplayOptions.BuildLaunchArguments(_config, gameData, _displayAspect);
 
-            args.Add("--render_target_path_d3d12=rov");
-
-            int scale = _config.ResolutionScale;
-            if (scale > 1)
-                args.Add(string.Format("--resolution_scale={0}", scale));
-
-            if (!string.IsNullOrEmpty(_config.SwapPostEffect) && _config.SwapPostEffect != "none")
-                args.Add(string.Format("--swap_post_effect={0}", _config.SwapPostEffect));
-
-            if (_config.AnisotropicOverride >= 0)
-                args.Add(string.Format("--anisotropic_override={0}", _config.AnisotropicOverride));
-
-            args.Add("--vsync=true");
-            args.Add("--d3d12_host_vsync=true");
-            args.Add("--video_mode_refresh_rate=60");
-
-            args.Add("--input_backend=" + _config.InputBackend);
-
-            string aspect = _config.AspectRatio ?? "native";
-            if (!string.IsNullOrEmpty(aspect) && aspect != "native")
-                args.Add(string.Format("--ultrawide_target_aspect={0}", aspect));
-
-            args.Add(loggingEnabled ? "--log_level=info" : "--log_level=off");
-
-            if (_config.GlyphFamily.Equals("playstation", StringComparison.OrdinalIgnoreCase))
-                args.Add("--glyph_family=playstation");
-
-            string arguments = string.Join(" ", args);
-            PlayNoteText.Text = "Launching with " + (scale > 1 ? scale + "x resolution" : "original resolution") + "...";
+            var launchMode = ResolutionCombo.SelectedItem as DisplayModeOption;
+            string rendererName = DisplayOptions.NormalizeRenderer(_config.Renderer) == DisplayOptions.RendererNative
+                ? "Native (Vulkan)" : "ReXGlue (D3D12)";
+            PlayNoteText.Text = "Launching at " +
+                (launchMode != null ? launchMode.Width + "x" + launchMode.Height : "default resolution") +
+                " using " + rendererName + "...";
             PlayButton.IsEnabled = false;
             _gameRunning = true;
 
@@ -373,7 +353,7 @@ namespace DantesInferno.Launcher
         private void ApplyRecommended_Click(object sender, RoutedEventArgs e)
         {
             _config.ResolutionScale = 2;
-            _config.AspectRatio = "native";
+            _config.Renderer = DisplayOptions.RendererReXGlue;
             _config.SwapPostEffect = "fxaa";
             _config.AnisotropicOverride = -1;
             _config.VSync = true;
