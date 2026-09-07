@@ -28,6 +28,9 @@ generated/*/*.hpp
 # --- ReXGlue SDK (cloned via setup script, not tracked here) ---
 thirdparty/rexglue-sdk/
 
+# --- DiligentCore (cloned for native renderer, not tracked here) ---
+thirdparty/diligent-core/
+
 # --- Disc images (copyrighted, do NOT commit) ---
 disc/
 *.iso
@@ -108,3 +111,9 @@ launcher/installer.iss
 
 # --- Test launcher dir ---
 test-launcher/
+
+# --- Reverse engineering research workspace (persistent KB, never commit) ---
+tools/research/
+
+# --- Archived glyph research (moved out of working tree, never commit) ---
+.archive/
