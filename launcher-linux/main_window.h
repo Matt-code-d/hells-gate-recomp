@@ -75,4 +75,4 @@ class MainWindow final : public QMainWindow {
   QCheckBox* logging_ = nullptr;
 };
 
-}  // namespace dantes::launcher
+}  

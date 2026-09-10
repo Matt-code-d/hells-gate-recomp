@@ -14,6 +14,17 @@ class Window;
 
 namespace dante {
 
+struct NativePresenterMetrics {
+  uint64_t guest_frame_count = 0;
+  uint64_t capture_ok = 0;
+  uint64_t capture_fail = 0;
+  uint64_t empty_image = 0;
+  uint64_t interop_ok = 0;
+  uint64_t interop_fail = 0;
+  bool gpu_interop_active = false;
+  bool gpu_interop_failed = false;
+};
+
 class NativePresenter {
  public:
   NativePresenter();
@@ -28,6 +39,8 @@ class NativePresenter {
   void shutdown();
 
   bool isInitialized() const;
+
+  NativePresenterMetrics GetMetrics() const;
 
  private:
   struct Impl;

@@ -16,7 +16,7 @@ QString valueArgument(const char* name, const QString& value) {
   return QStringLiteral("--%1=%2").arg(QString::fromLatin1(name), value);
 }
 
-}  // namespace
+}  
 
 QString GameConfig::globalConfigPath() {
   const QString directory =
@@ -190,4 +190,4 @@ QStringList GameConfig::commandLine(const QString& dataRoot,
   return result;
 }
 
-}  // namespace dantes::launcher
+}  

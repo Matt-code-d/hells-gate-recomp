@@ -51,7 +51,7 @@ QGroupBox* group(const QString& title, QLayout* layout) {
   return box;
 }
 
-}  // namespace
+}  
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   setWindowTitle(QStringLiteral("Dante's Inferno — ARM64"));
@@ -82,8 +82,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   dataRoot_ = GameConfig::selectedDataRoot();
   gameRoot_ = GameConfig::selectedGameRoot();
 
-  // If the stored data root points to a read-only location (for example,
-  // an AppImage mount directory), clear it so the UI can prompt again.
+  
+  
   if (!dataRoot_.isEmpty()) {
     const QString testFile =
         QDir(dataRoot_).filePath(QStringLiteral(".__dantes_write_test__"));
@@ -337,7 +337,7 @@ bool MainWindow::setDataRoot(const QString& root) {
   const QString cacheDir = QDir(dataRoot_).filePath(QStringLiteral("cache"));
   const QString logsDir = QDir(dataRoot_).filePath(QStringLiteral("logs"));
 
-  // Guard against read-only mounts (AppImage mount directories, etc).
+  
   if (!QDir().mkpath(configDir) || !QDir().mkpath(savesDir) ||
       !QDir().mkpath(cacheDir) || !QDir().mkpath(logsDir)) {
     QMessageBox::critical(this, tr("Path is not writable"),
@@ -586,8 +586,8 @@ void MainWindow::play() {
     return;
   }
 
-  // Ensure the logs directory exists before starting the game so the
-  // ReXGlue runtime doesn't try to create it inside the read-only AppImage.
+  
+  
   QDir().mkpath(QDir(dataRoot_).filePath(QStringLiteral("logs")));
 
   QProcess process;
@@ -640,4 +640,4 @@ void MainWindow::updateStatus() {
   importIsoButton_->setEnabled(!gameRoot_.isEmpty());
 }
 
-}  // namespace dantes::launcher
+}  

@@ -69,7 +69,7 @@ bool copyTree(const QString& source, const QString& destination, qint64 total,
   return true;
 }
 
-}  // namespace
+}  
 
 QString ImportService::defaultXexPath(const QString& gameRoot) {
   return QDir(gameRoot).filePath(QStringLiteral("default.xex"));
@@ -228,4 +228,4 @@ ImportResult ImportService::extractIso(const QString& isoPath,
   return commit(temporary, gameRoot);
 }
 
-}  // namespace dantes::launcher
+}  

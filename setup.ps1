@@ -1,7 +1,7 @@
-# setup.ps1 - Bootstrap the Dante's Inferno ReXGlue port project.
-#
-# Clones the ReXGlue SDK into thirdparty/rexglue-sdk at the pinned version and
-# initializes its nested submodules. Safe to re-run.
+
+
+
+
 
 $ErrorActionPreference = "Stop"
 
@@ -11,7 +11,7 @@ $tag    = "v0.10.0"
 
 Write-Host "== Dante's Inferno - ReXGlue project setup ==" -ForegroundColor Cyan
 
-# --- Prerequisite checks -----------------------------------------------------
+
 foreach ($tool in @("git", "cmake", "ninja", "clang")) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
         Write-Host "MISSING: $tool not found on PATH." -ForegroundColor Red
@@ -21,7 +21,7 @@ foreach ($tool in @("git", "cmake", "ninja", "clang")) {
 }
 Write-Host "Prerequisites OK." -ForegroundColor Green
 
-# --- Clone / update SDK ------------------------------------------------------
+
 if (Test-Path (Join-Path $sdkDir ".git")) {
     Write-Host "SDK already cloned at $sdkDir"
 } else {
@@ -34,7 +34,7 @@ Write-Host "Initializing SDK submodules (this can take a while) ..."
 git -C $sdkDir submodule update --init --recursive --depth 1
 if ($LASTEXITCODE -ne 0) { throw "submodule init failed" }
 
-# --- Apply local SDK patches -------------------------------------------------
+
 $applySdkPatches = Join-Path $root "patches\apply_sdk_patches.ps1"
 if (Test-Path $applySdkPatches) {
     Write-Host "Applying local SDK patches ..."

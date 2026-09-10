@@ -1,4 +1,4 @@
-// dantes_inferno - ReXGlue Recompiled Project
+
 
 #include "generated/default/dantes_inferno_init.h"
 

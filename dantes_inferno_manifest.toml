@@ -21,6 +21,218 @@ registers = ["f12"]
 after_instruction = true
 
 
+
+
+
+[[midasm_hook]]
+address = 0x821D3FE4
+name = "DiagAbsolveTimerIncrement"
+registers = ["f0"]
+after_instruction = true
+
+
+
+
+[[midasm_hook]]
+address = 0x824238C4
+name = "AbsolvePromptTimerIncrement"
+registers = ["f0"]
+after_instruction = true
+
+
+
+[[midasm_hook]]
+address = 0x82423EB4
+name = "AbsolveRollTimeStep"
+registers = ["f0"]
+after_instruction = true
+
+
+
+[[midasm_hook]]
+address = 0x82423EF4
+name = "AbsolveRollRamp"
+registers = ["r7"]
+after_instruction = false
+
+
+
+[[midasm_hook]]
+address = 0x82422B8C
+name = "Absolve6eThrottle"
+registers = ["r11", "r29"]
+after_instruction = true
+
+
+
+[[midasm_hook]]
+address = 0x82422B34
+name = "AbsolveTableRamp"
+registers = ["r8"]
+after_instruction = false
+
+
+
+[[midasm_hook]]
+address = 0x824922B0
+name = "DiagSdbmDispatcher"
+registers = ["r11", "r3", "r4", "r12"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82492368
+name = "DiagSdbmHandlerCall"
+registers = ["r11", "r3", "r4"]
+after_instruction = false
+
+
+
+
+[[midasm_hook]]
+address = 0x825127A8
+name = "DiagBaseHzWriter"
+registers = ["f13"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x821A2A50
+name = "DiagBaseHzReader"
+registers = ["f0"]
+after_instruction = true
+
+
+
+[[midasm_hook]]
+address = 0x8243F470
+name = "DiagUiHz8243F470"
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8245FE10
+name = "DiagUiHz8245FE10"
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82478238
+name = "DiagUiHz82478238"
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82496118
+name = "DiagUiHz82496118"
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x827B55D0
+name = "DiagUiHz827B55D0"
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x827B2CD0
+name = "DiagUiHz827B2CD0"
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x827B2CF0
+name = "DiagUiHz827B2CF0"
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x827B51EC
+name = "DiagUiHz827B51EC"
+registers = ["f13"]
+after_instruction = true
+
+
+
+
+[[midasm_hook]]
+address = 0x8243F278
+name = "DiagUiStep8243F278"
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8243F2C0
+name = "DiagUiStep8243F2C0"
+registers = ["f12"]
+after_instruction = true
+
+
+[[midasm_hook]]
+address = 0x82512D34
+name = "DiagModeByteLoad"
+registers = ["r11", "r27"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8266B3AC
+name = "DiagOneThirtyLoadA"
+registers = ["f8", "r5"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82730F48
+name = "DiagOneThirtyLoadB"
+registers = ["f9", "r6"]
+after_instruction = true
+
+
+
+
+
+[[midasm_hook]]
+address = 0x82423C34
+name = "DiagAbsolvePromptTimer"
+registers = ["f1", "f0", "r3", "r30"]
+after_instruction = true
+
+
+[[midasm_hook]]
+address = 0x821C6510
+name = "DiagAbsolveSingleton"
+registers = ["r11"]
+after_instruction = true
+
+
+[[midasm_hook]]
+address = 0x821C624C
+name = "DiagAbsolveUpdateVTable"
+registers = ["r11", "r3"]
+after_instruction = true
+
+
+[[midasm_hook]]
+address = 0x82423D3C
+name = "DiagAbsolveStopStateWrite"
+registers = ["r11", "r28"]
+after_instruction = true
+
+
+[[midasm_hook]]
+address = 0x82423F1C
+name = "DiagAbsolveRollStateWrite"
+registers = ["r10", "r31"]
+after_instruction = true
+
+
+
+
+[[midasm_hook]]
+address = 0x824BDE1C
+name = "CatchingSoulsTimingFix"
+registers = ["r11"]
+after_instruction = true
+return_on_true = true
+
+
 [entrypoint.functions.0x8221FE10]
 name = "unresolved_target_8221FE10"
 

@@ -1,9 +1,9 @@
-// native_renderer_integration.cpp - Integration with ReXGlue app
-//
-// Bridges the project-owned native renderer with the ReXGlue SDL window.
-// Gated behind the `native_renderer` cvar.
-//
-// Part of the DiligentCore migration (IMPL-DC-003).
+
+
+
+
+
+
 
 #include "native_renderer_integration.h"
 #include "native_device.h"
@@ -78,4 +78,4 @@ bool NativeRendererIntegration::isActive() const {
   return isInitialized() && REXCVAR_GET(native_renderer);
 }
 
-}  // namespace dante
+}  

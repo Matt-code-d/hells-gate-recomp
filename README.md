@@ -29,7 +29,7 @@ runtime.
 
 ## 🤖 AI Usage Disclosure
 
-Transparency and integrity are important to this project. Artificial Intelligence (AI) tools were utilized as part of the development and maintenance workflow, strictly serving as an assistant to handle repetitive, time-consuming, and low-level tasks. 
+Transparency and integrity are important to this project. Artificial Intelligence (AI) tools were utilized as part of the development and maintenance workflow, strictly serving as an assistant to handle repetitive, time-consuming, and low-level tasks.
 
 ### How AI Was Used:
 * **Documentation:** Generating initial drafts, organizing notes, and structuring documentation to keep project progress up to date.
@@ -39,106 +39,32 @@ Transparency and integrity are important to this project. Artificial Intelligenc
 ### Human Oversight:
 While AI accelerated the auxiliary workflow, all core architectural decisions, advanced problem-solving, code implementation, and final reviews were entirely human-driven. The AI served to eliminate friction, allowing focus on high-level logic and feature development.
 
-## Project layout
+## Progress Tracker
 
-```
-.
-├── CMakeLists.txt                 # Build config (SDK-managed, regenerate w/ rexglue init --force)
-├── CMakePresets.json              # Platform build presets (SDK-managed)
-├── dantes_inferno_manifest.toml   # ReXGlue project manifest (SDK-managed)
-├── generated/
-│   ├── rexglue.cmake              # SDK boilerplate (auto-generated, DO NOT EDIT)
-│   └── default/                   # codegen output (gitignored, built on demand)
-├── src/
-│   ├── main.cpp                   # App entry point (SDK-managed)
-│   └── dantes_inferno_app.h       # App class - override hooks here (user-owned)
-├── game/                          # Extracted Xbox 360 game files (gitignored)
-│   └── default.xex                #   <- entrypoint XEX goes here
-├── metadata/                      # Achievement icons / embedded metadata
-├── thirdparty/
-│   └── rexglue-sdk/               # ReXGlue SDK (cloned via setup script, gitignored)
-├── docs/
-│   └── rexglue_notes.md           # ReXGlue workflow & command reference
-├── setup.ps1 / setup.sh           # Clone SDK + init submodules
-└── .gitignore
-```
+- [x] Game boots, runs, and is fully playable
+  - ReXGlue SDK v0.10.0 codegen + native build
+  - VMX/AltiVec PowerPC instructions supported
+  - VP6/Bink FMV corruption fixed (upstream PR #426)
+  - Save system fixed (fiber/setjmp/longjmp + `XUserFindUsers` handler)
 
-## Prerequisites
+- [x] Graphics & input configured
+  - Resolution scaling, anisotropic override, post-effect cvars
+  - Aspect ratio control: 4:3 / 16:9 / 16:10 / 21:9 / 32:9
+  - SDL input backend set as default
+  - Mouse & keyboard keybind defaults configured
 
-- **Windows 10/11 x64** (this project targets Windows/D3D12)
-- **Clang 18+** (LLVM/Clang)
-- **CMake 3.25+**
-- **Ninja** build system
-- **Visual Studio 2022** (for the Windows SDK / D3D12 headers)
+### In progress
+- [ ] DLC auto-install hook (`OnPostSetup` STFS package scan)
+- [ ] 120 Hz / high-refresh timing polish (gameplay OK; menu/minigame timing under reverse engineering)
+- [ ] Native DiligentCore/Vulkan renderer migration (working, not fully implemented)
 
-## Getting started
+## Roadmap
 
-### 1. Set up the SDK
-
-```powershell
-.\setup.ps1
-```
-
-This clones the ReXGlue SDK (pinned to `v0.10.0`) into `thirdparty/rexglue-sdk`
-and initializes its submodules.
-
-### 2. Provide the game files
-
-Extract your ripped Xbox 360 ISO into `game/`. The entrypoint executable must be
-at `game/default.xex` (the path set in `dantes_inferno_manifest.toml`). Keep the
-original directory layout for all other assets.
-
-> **Do not commit anything under `game/`** - it contains copyrighted assets used
-> locally for recompilation only.
-
-### 3. Build the SDK CLI (one time)
-
-```powershell
-cmake --preset win-amd64-release -DREXSDK_DIR=thirdparty\rexglue-sdk
-cmake --build out\build\win-amd64-release --target rexglue
-```
-
-Add the built `rexglue.exe` to your PATH (it lives under
-`thirdparty\rexglue-sdk\out\win-amd64\Release\`).
-
-### 4. Regenerate SDK-managed files
-
-Once `game/default.xex` exists, regenerate the SDK-managed scaffolding so it
-carries the exact version/build stamp:
-
-```powershell
-rexglue init --force --project_name dantes_inferno --project_root . --xex_path game\default.xex --game_root game
-```
-
-### 5. Configure & build the port
-
-```powershell
-cmake --preset win-amd64-release -DREXSDK_DIR=thirdparty\rexglue-sdk
-cmake --build out\build\win-amd64-release
-```
-
-The build automatically runs `rexglue codegen` (translating the XEX to C++) the
-first time and whenever inputs change. Output: `out\win-amd64\Release\dantes_inferno.exe`.
-
-### 6. Run
-
-```powershell
-.\out\win-amd64\Release\dantes_inferno.exe
-# Useful flags:
-#   --log_level=trace     verbose logging
-#   --log_file=run.log    write logs to file
-```
-
-## Customizing the port
-
-Override virtual hooks in `src/dantes_inferno_app.h` (e.g. `OnPostSetup`,
-`OnCreateDialogs`, `OnConfigurePaths`). That file is **user-owned** and
-preserved across `rexglue init` / `rexglue migrate`. See
-`docs/rexglue_notes.md` for the full hook list and workflow reference.
-
-## License
-
-This repository contains only port scaffolding and configuration. The ReXGlue
-SDK is licensed under the BSD 3-Clause License (see `thirdparty/rexglue-sdk/`).
-Dante's Inferno and all game assets are property of their respective rights
-holders; nothing under `game/` is distributed here.
+| Phase | Feature | Status |
+|-------|---------|--------|
+| 1 | Graphics quality cvars (resolution scale, AA, filtering) | Done |
+| 2 | Input defaults + SDL backend | Done |
+| 3 | DLC auto-install | In progress |
+| 4 | Ultrawide / aspect-ratio support | Done |
+| 5 | Button glyph replacement (input-device RE) | Planned |
+| 6 | Native DiligentCore/Vulkan renderer migration | In progress (working, not final) |

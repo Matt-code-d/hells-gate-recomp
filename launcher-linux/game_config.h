@@ -48,4 +48,4 @@ class GameConfig {
   static void write(QSettings& out, const GameSettings& settings);
 };
 
-}  // namespace dantes::launcher
+}  

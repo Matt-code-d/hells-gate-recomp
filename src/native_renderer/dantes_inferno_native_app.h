@@ -1,20 +1,20 @@
-// dantes_inferno_native_app.h - Derived app with native renderer integration
-//
-// This is a COPY/DERIVATIVE of the original dantes_inferno_app.h.
-// It inherits from DantesInfernoApp and adds native DiligentCore/Vulkan
-// renderer support. The original src/dantes_inferno_app.h is NOT modified.
-//
-// Part of the DiligentCore migration (IMPL-DC-003).
-// See: tools/research/dante_re/TRANSITION/DILIGENTCORE_MIGRATION_PLAN.md
+
+
+
+
+
+
+
+
 
 #pragma once
 
 #include "dantes_inferno_app.h"
 #include "native_renderer/native_renderer_integration.h"
 
-// Derived app class that adds native renderer support on top of the
-// original DantesInfernoApp. All original behavior is inherited;
-// native renderer hooks are added via overrides.
+
+
+
 class DantesInfernoNativeApp : public DantesInfernoApp {
  public:
   using DantesInfernoApp::DantesInfernoApp;
@@ -26,10 +26,10 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
   }
 
   void OnPostSetup() override {
-    // Call base class first (sets up time scalar, FPS overlay, keybinds)
+    
     DantesInfernoApp::OnPostSetup();
 
-    // Initialize native renderer using the app's SDL window
+    
     if (window()) {
       void* hwnd = window()->GetNativeWindowHandle();
       if (hwnd) {

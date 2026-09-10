@@ -117,3 +117,11 @@ tools/research/
 
 # --- Archived glyph research (moved out of working tree, never commit) ---
 .archive/
+
+# --- Local tools/research docs (not part of the shipped port) ---
+tools/asset_tool.py
+tools/ASSET_TOOL_README.md
+tools/build_dante_diagnostic.ps1
+tools/run_cmake_test.py
+tools/extract-xiso/
+docs/HYBRID_RENDERER_PLAN.md

@@ -11,13 +11,20 @@
 #include <rex/graphics/graphics_system.h>
 #include <rex/logging/macros.h>
 
+#include "dantes_inferno_hooks.h"
+
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
+#include <iomanip>
+#include <sstream>
+#include <thread>
+
+#include "native_renderer/native_presenter.h"
 
 #ifdef DANTESINFERNO_NATIVE_RENDERER
-#include "native_renderer/native_presenter.h"
 #include <memory>
 #endif
 
@@ -33,6 +40,22 @@ REXCVAR_DEFINE_STRING(glyph_family, "auto", "UI",
 REXCVAR_DEFINE_DOUBLE(ultrawide_target_aspect, 0.0, "Graphics",
                       "Target aspect ratio for ultrawide (0=disabled, 1.7778=16:9, "
                       "2.3889=21:9, 3.5556=32:9)");
+
+REXCVAR_DEFINE_DOUBLE(engine_base_hz_override, 0.0, "Diagnostics",
+                      "Override guest base Hz timing constant (0 = disabled). "
+                      "Distinct from the SDK target_fps diagnostic cvar.")
+    .range(0.0, 240.0)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(ui_timing_fix, false, "Diagnostics/Experimental",
+                    "Present a local 60Hz compatibility clock to verified UI timing "
+                    "consumers only. Requires engine_base_hz_override>0. Requires restart.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(catching_souls_timing_fix, false, "Diagnostics/Experimental",
+                    "Scale only the Catching Souls prompt's per-frame counter increment "
+                    "to 60Hz time. Requires engine_base_hz_override>0. Requires restart.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 class FpsOverlayDialog : public rex::ui::ImGuiDialog {
  public:
@@ -152,6 +175,22 @@ class DantesInfernoApp : public rex::ReXApp {
 
     REXCVAR_SET(input_backend, std::string("sdl"));
 
+    
+    
+    
+    if (REXCVAR_GET(engine_base_hz_override) <= 0.0) {
+      REXCVAR_SET(engine_base_hz_override, 120.0);
+    }
+    REXCVAR_SET(ui_timing_fix, true);
+    REXCVAR_SET(catching_souls_timing_fix, true);
+
+    const double override_hz = REXCVAR_GET(engine_base_hz_override);
+    if (override_hz > 0.0) {
+      rex::cvar::SetFlagByName("video_mode_refresh_rate", std::to_string(override_hz));
+      rex::cvar::SetFlagByName("target_fps", "0");
+      rex::cvar::SetFlagByName("vsync", "true");
+    }
+
     rex::cvar::SetFlagByName("mnk_mode", "true");
     rex::cvar::SetFlagByName("mnk_mouse", "true");
     rex::cvar::SetFlagByName("mnk_sensitivity", "1.5");
@@ -252,6 +291,9 @@ class DantesInfernoApp : public rex::ReXApp {
       }
     });
 
+    diag_stop_.store(false);
+    diag_thread_ = std::make_unique<std::thread>(&DantesInfernoApp::DiagnosticsLogger, this);
+
     rex::ui::RegisterBind("bind_fast_forward", "F2",
                           "Toggle 50x fast-forward", [this] {
       double current = REXCVAR_GET(time_scalar);
@@ -285,6 +327,12 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
   void OnShutdown() override {
+    diag_stop_.store(true, std::memory_order_relaxed);
+    if (diag_thread_ && diag_thread_->joinable()) {
+      diag_thread_->join();
+      diag_thread_.reset();
+    }
+
 #ifdef DANTESINFERNO_NATIVE_RENDERER
     native_presenter_.reset();
 #endif
@@ -304,4 +352,200 @@ class DantesInfernoApp : public rex::ReXApp {
 #ifdef DANTESINFERNO_NATIVE_RENDERER
   std::unique_ptr<dante::NativePresenter> native_presenter_;
 #endif
+  std::atomic<bool> diag_stop_{false};
+  std::unique_ptr<std::thread> diag_thread_;
+
+  void DiagnosticsLogger() {
+    DiagSnapshot prev{};
+    DiagSnapshot cur{};
+    g_diag_counters.Snapshot(prev);
+    uint64_t prev_guest_frames = 0;
+    auto start = std::chrono::steady_clock::now();
+    auto last_log = start;
+    while (!diag_stop_.load(std::memory_order_relaxed)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      auto now = std::chrono::steady_clock::now();
+      double elapsed = std::chrono::duration<double>(now - last_log).count();
+      if (elapsed < 5.0) continue;
+      g_diag_counters.Snapshot(cur);
+      uint64_t guest_frames = 0;
+      double guest_fps = 0.0;
+      auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
+      auto* cp = gfx_sys
+          ? static_cast<rex::graphics::GraphicsSystem*>(gfx_sys)->command_processor()
+          : nullptr;
+      if (cp) {
+        guest_frames = cp->counter();
+        if (prev_guest_frames > 0 && guest_frames > prev_guest_frames) {
+          guest_fps = double(guest_frames - prev_guest_frames) / elapsed;
+        }
+      }
+      dante::NativePresenterMetrics np{};
+#ifdef DANTESINFERNO_NATIVE_RENDERER
+      if (native_presenter_) np = native_presenter_->GetMetrics();
+#endif
+      auto delta = [](uint64_t c, uint64_t p) { return c >= p ? c - p : uint64_t(0); };
+      auto rate = [&](uint64_t c, uint64_t p) { return double(delta(c, p)) / elapsed; };
+      uint64_t scheduler_window_count = delta(cur.scheduler_message_overflow_count,
+                                              prev.scheduler_message_overflow_count);
+      for (size_t i = 0; i < cur.scheduler_message_counts.size(); ++i) {
+        scheduler_window_count += delta(cur.scheduler_message_counts[i],
+                                        prev.scheduler_message_counts[i]);
+      }
+      REXLOG_INFO(
+          "DIAG: t={:.1f}s guest_fps={:.2f} "
+          "vblank_cb={:.1f}/s (src={:08X},arg={:08X}) vblank_ev={:.1f}/s "
+          "cb4170={:.1f}/s (tgt={:08X}) cb416c_val={:.1f}/s cb416c_call={:.1f}/s (tgt={:08X}) "
+          "f324={:.1f}/s 5504={:08X} d_f3bc={} d_f3c8_clamped={} d_f3cc_final={} "
+          "hb_reader={:.1f}/s hb_pub={:08X}@{:.1f}/s hb_cons={:08X}@{:.1f}/s hb_bound={:.1f}/s "
+          "cb_sched={:.1f}/s cb_slots={:.1f}/s cb_dispatch[slot={:X},obj={:08X},arg={:08X}]={:.1f}/s "
+          "ui_dispatch={:.1f}/s vdswap={:.1f}/s "
+          "render_entry={:.1f}/s render_loop={:.1f}/s "
+          "scheduler={:.1f}/s overflow={:.1f}/s msg_ptr={:08X} f1={:.6g} f2={:.6g} f3={:.6g} "
+          "present_loop={:.1f}/s async={:08X} "
+          "np=[gf={} ok={}/{} fail={}/{} empty={} mode={}]",
+          std::chrono::duration<double>(now - start).count(), guest_fps,
+          rate(cur.vblank_callback_count, prev.vblank_callback_count),
+          cur.vblank_callback_source, cur.vblank_callback_arg,
+          rate(cur.vblank_event_processor_count, prev.vblank_event_processor_count),
+          rate(cur.callback_4170_count, prev.callback_4170_count),
+          cur.callback_4170_target,
+          rate(cur.callback_416c_value_count, prev.callback_416c_value_count),
+          rate(cur.callback_416c_call_count, prev.callback_416c_call_count),
+          cur.callback_416c_target,
+          rate(cur.f324_entry_count, prev.f324_entry_count), cur.value_5504,
+          cur.delta_f3bc, cur.delta_f3c8, cur.final_delta,
+          rate(cur.hb_reader_entry_count, prev.hb_reader_entry_count),
+          cur.hb_published_value, rate(cur.hb_published_count, prev.hb_published_count),
+          cur.hb_consumed_value, rate(cur.hb_consumed_count, prev.hb_consumed_count),
+          rate(cur.hb_call_boundary_count, prev.hb_call_boundary_count),
+          rate(cur.cb_sched_entry_count, prev.cb_sched_entry_count),
+          rate(cur.cb_slot_iter_entry_count, prev.cb_slot_iter_entry_count),
+          cur.cb_dispatch_slot, cur.cb_dispatch_object, cur.cb_dispatch_arg,
+          rate(cur.cb_dispatch_entry_count, prev.cb_dispatch_entry_count),
+          rate(cur.engine_ui_dispatch_count, prev.engine_ui_dispatch_count),
+          rate(cur.vdswap_count, prev.vdswap_count),
+          rate(cur.render_loop_entry_count, prev.render_loop_entry_count),
+          rate(cur.render_loop_loopback_count, prev.render_loop_loopback_count),
+          double(scheduler_window_count) / elapsed,
+          rate(cur.scheduler_message_overflow_count, prev.scheduler_message_overflow_count),
+          cur.scheduler_message_pointer,
+          std::bit_cast<double>(cur.scheduler_message_f1),
+          std::bit_cast<double>(cur.scheduler_message_f2),
+          std::bit_cast<double>(cur.scheduler_message_f3),
+          rate(cur.presentation_loop_count, prev.presentation_loop_count),
+          cur.presentation_async_flag,
+          np.guest_frame_count, np.capture_ok, np.interop_ok, np.capture_fail,
+          np.interop_fail, np.empty_image,
+          (np.gpu_interop_active && !np.gpu_interop_failed) ? "gpu" : "cpu");
+      for (size_t i = 0; i < cur.scheduler_message_ids.size(); ++i) {
+        if (cur.scheduler_message_ids[i] != UINT32_MAX) {
+          REXLOG_INFO("DIAG_MSG: {:08X}:{:.1f}/s", cur.scheduler_message_ids[i],
+                      rate(cur.scheduler_message_counts[i], prev.scheduler_message_counts[i]));
+        }
+      }
+      std::ostringstream sdbm;
+      bool sdbm_first = true;
+      for (size_t i = 0; i < kSdbmMessages.size(); ++i) {
+        uint64_t d = delta(cur.sdbm_message_counts[i], prev.sdbm_message_counts[i]);
+        if (d > 0) {
+          if (!sdbm_first) sdbm << " ";
+          sdbm << kSdbmMessages[i].name << "=" << std::fixed << std::setprecision(1)
+               << (double(d) / elapsed) << "/s";
+          sdbm_first = false;
+        }
+      }
+      uint64_t sdbm_unknown = delta(cur.sdbm_message_unknown_count,
+                                    prev.sdbm_message_unknown_count);
+      if (!sdbm_first) sdbm << " ";
+      sdbm << "unknown_total=" << sdbm_unknown;
+      REXLOG_INFO("DIAG_SDBM: latest=0x{:08X} payload=0x{:08X} context=0x{:08X} {}",
+                  cur.sdbm_latest_id, cur.sdbm_latest_payload, cur.sdbm_latest_context,
+                  sdbm.str());
+      for (size_t i = 0; i < cur.sdbm_unknown_ids.size(); ++i) {
+        if (cur.sdbm_unknown_ids[i] != UINT32_MAX) {
+          REXLOG_INFO("DIAG_SDBM_UNKNOWN: {:08X}:{:.1f}/s",
+                      cur.sdbm_unknown_ids[i],
+                      rate(cur.sdbm_unknown_counts[i], prev.sdbm_unknown_counts[i]));
+        }
+      }
+      uint64_t handler_overflow = delta(cur.sdbm_handler_overflow_count,
+                                        prev.sdbm_handler_overflow_count);
+      if (handler_overflow > 0) {
+        REXLOG_INFO("DIAG_HANDLER_OVERFLOW: +{} in window", handler_overflow);
+      }
+      for (size_t i = 0; i < cur.sdbm_handler_ids.size(); ++i) {
+        if (cur.sdbm_handler_ids[i] == UINT32_MAX) continue;
+        uint64_t handler_window = delta(cur.sdbm_handler_counts[i],
+                                        prev.sdbm_handler_counts[i]);
+        if (handler_window == 0) continue;
+        REXLOG_INFO(
+            "DIAG_HANDLER id={:08X} producer={:08X} target={:08X} obj={:08X} rate={:.1f}/s",
+            cur.sdbm_handler_ids[i], cur.sdbm_handler_producers[i],
+            cur.sdbm_handler_targets[i], cur.sdbm_handler_objs[i],
+            double(handler_window) / elapsed);
+      }
+      REXLOG_INFO("DIAG_MODE: value={} transitions={:.1f}/s object=0x{:08X}",
+                  cur.mode_byte_value,
+                  rate(cur.mode_byte_transitions, prev.mode_byte_transitions),
+                  cur.mode_byte_object);
+      REXLOG_INFO("DIAG_130: A={:.1f}/s val={:.6g} obj=0x{:08X} "
+                  "B={:.1f}/s val={:.6g} obj=0x{:08X}",
+                  rate(cur.onethirty_a_count, prev.onethirty_a_count),
+                  cur.onethirty_a_value, cur.onethirty_a_object,
+                  rate(cur.onethirty_b_count, prev.onethirty_b_count),
+                  cur.onethirty_b_value, cur.onethirty_b_object);
+      REXLOG_INFO("DIAG_BASE_HZ: override={:.0f} original={:.6g} applied={:.6g} "
+                  "writer_hooks={} reader_hooks={} reader_value={:.6g}",
+                  rex::cvar::Query<double>("engine_base_hz_override"), cur.base_hz_original,
+                  cur.base_hz_applied, cur.base_hz_writer_hook_count,
+                  cur.base_hz_reader_hook_count, cur.base_hz_reader_value);
+      constexpr std::array<uint32_t, 8> kUiFixAddresses = {
+          0x8243F470, 0x8245FE10, 0x82478238, 0x82496118,
+          0x827B55D0, 0x827B2CD0, 0x827B2CF0, 0x827B51EC};
+      std::ostringstream ui_fix;
+      for (size_t i = 0; i < kUiFixAddresses.size(); ++i) {
+        if (i != 0) ui_fix << " ";
+        ui_fix << std::hex << std::uppercase << kUiFixAddresses[i] << std::dec
+               << "=" << std::fixed << std::setprecision(1)
+               << rate(cur.ui_fix_site_counts[i], prev.ui_fix_site_counts[i])
+               << "/s:" << std::setprecision(6) << cur.ui_fix_site_original[i]
+               << ">" << cur.ui_fix_site_applied[i];
+      }
+      REXLOG_INFO("DIAG_UI_FIX: enabled={} {}",
+                  rex::cvar::Query<bool>("ui_timing_fix"), ui_fix.str());
+      REXLOG_INFO("DIAG_CATCHING_SOULS: enabled={} hits={} rate={:.1f}/s "
+                  "original={:.6g} scaled={:.6g} factor={:.6g}",
+                  rex::cvar::Query<bool>("catching_souls_timing_fix"),
+                  cur.catching_souls_hit_count,
+                  rate(cur.catching_souls_hit_count, prev.catching_souls_hit_count),
+                  cur.catching_souls_original_increment,
+                  cur.catching_souls_scaled_increment, cur.catching_souls_factor);
+      REXLOG_INFO("DIAG_ABSOLVE: update={:.1f}/s timer_calls={:.1f}/s "
+                  "prompt_calls={:.1f}/s timer_orig={:.9g} timer_scaled={:.9g} "
+                  "prompt_inc={:.1f}/s prompt_orig={:.9g} prompt_scaled={:.9g} "
+                  "roll_step={:.1f}/s roll_orig={:.9g} roll_scaled={:.9g} "
+                  "prompt_value={:.9g} threshold={:.9g}",
+                  rate(cur.absolve_update_vtable_calls,
+                       prev.absolve_update_vtable_calls),
+                  rate(cur.absolve_timer_increment_calls,
+                       prev.absolve_timer_increment_calls),
+                  rate(cur.absolve_prompt_timer_calls,
+                       prev.absolve_prompt_timer_calls),
+                  cur.absolve_timer_last_original, cur.absolve_timer_last_scaled,
+                  rate(cur.absolve_prompt_timer_increment_calls,
+                       prev.absolve_prompt_timer_increment_calls),
+                  cur.absolve_prompt_timer_last_original,
+                  cur.absolve_prompt_timer_last_scaled,
+                  rate(cur.absolve_roll_step_calls,
+                       prev.absolve_roll_step_calls),
+                  cur.absolve_roll_step_last_original,
+                  cur.absolve_roll_step_last_scaled,
+                  cur.absolve_prompt_timer_last_value,
+                  cur.absolve_prompt_timer_last_threshold);
+      prev = cur;
+      prev_guest_frames = guest_frames;
+      last_log = now;
+    }
+  }
 };

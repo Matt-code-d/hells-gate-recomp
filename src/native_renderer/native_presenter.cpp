@@ -46,6 +46,13 @@ struct NativePresenter::Impl {
   bool gpu_interop_active = false;
   bool gpu_interop_failed = false;
 
+  
+  std::atomic<uint64_t> diag_capture_ok{0};
+  std::atomic<uint64_t> diag_capture_fail{0};
+  std::atomic<uint64_t> diag_empty_image{0};
+  std::atomic<uint64_t> diag_interop_ok{0};
+  std::atomic<uint64_t> diag_interop_fail{0};
+
   ~Impl() {
     stop();
   }
@@ -153,6 +160,7 @@ struct NativePresenter::Impl {
                                            shared.adapter_luid_low,
                                            shared.adapter_luid_high)) {
               interop_fail_count++;
+              diag_interop_fail.fetch_add(1, std::memory_order_relaxed);
               if (interop_fail_count <= 3) {
                 REXLOG_WARN("NativePresenter: presentImageShared failed (count={}), "
                             "falling back to CPU readback",
@@ -167,6 +175,7 @@ struct NativePresenter::Impl {
               }
             } else {
               interop_ok_count++;
+              diag_interop_ok.fetch_add(1, std::memory_order_relaxed);
               rex_presenter->ReleaseGuestOutputSharedTexture();
               if (measure) {
                 ++timing_presented;
@@ -183,6 +192,7 @@ struct NativePresenter::Impl {
             }
           } else {
             interop_fail_count++;
+            diag_interop_fail.fetch_add(1, std::memory_order_relaxed);
             if (interop_fail_count <= 3) {
               REXLOG_WARN("NativePresenter: GetGuestOutputSharedTexture failed "
                           "(count={}), trying CPU readback",
@@ -210,6 +220,7 @@ struct NativePresenter::Impl {
                 image.height - 1 <=
                     (image.data.size() - size_t(image.width) * 4) / image.stride) {
               capture_ok_count++;
+              diag_capture_ok.fetch_add(1, std::memory_order_relaxed);
               if (capture_ok_count == 1 || capture_ok_count == 60 ||
                   capture_ok_count == 300) {
                 size_t nonblack_pixels = 0;
@@ -242,6 +253,7 @@ struct NativePresenter::Impl {
               }
             } else {
               empty_image_count++;
+              diag_empty_image.fetch_add(1, std::memory_order_relaxed);
               if (empty_image_count == 1) {
                 REXLOG_WARN("NativePresenter: CaptureGuestOutput returned an invalid "
                             "image ({}x{}, stride={}, data_size={})",
@@ -250,6 +262,7 @@ struct NativePresenter::Impl {
             }
           } else {
             capture_fail_count++;
+            diag_capture_fail.fetch_add(1, std::memory_order_relaxed);
             device.beginFrame();
             device.clear(0.0f, 0.0f, 0.0f, 1.0f);
             device.present(rex::cvar::Query<bool>("d3d12_host_vsync") ? 1 : 0);
@@ -373,6 +386,20 @@ void NativePresenter::shutdown() {
 
 bool NativePresenter::isInitialized() const {
   return impl_ && impl_->running.load();
+}
+
+NativePresenterMetrics NativePresenter::GetMetrics() const {
+  NativePresenterMetrics out{};
+  if (!impl_ || !impl_->rex_presenter) return out;
+  out.guest_frame_count = impl_->rex_presenter->guest_frame_count();
+  out.capture_ok = impl_->diag_capture_ok.load(std::memory_order_relaxed);
+  out.capture_fail = impl_->diag_capture_fail.load(std::memory_order_relaxed);
+  out.empty_image = impl_->diag_empty_image.load(std::memory_order_relaxed);
+  out.interop_ok = impl_->diag_interop_ok.load(std::memory_order_relaxed);
+  out.interop_fail = impl_->diag_interop_fail.load(std::memory_order_relaxed);
+  out.gpu_interop_active = impl_->gpu_interop_active;
+  out.gpu_interop_failed = impl_->gpu_interop_failed;
+  return out;
 }
 
 }

@@ -35,4 +35,4 @@ class ImportService {
                              const QString& gameRoot);
 };
 
-}  // namespace dantes::launcher
+}  

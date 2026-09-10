@@ -80,21 +80,13 @@
             "name": "win-amd64-debug",
             "displayName": "Windows AMD64 Debug",
             "inherits": "windows-base",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_C_FLAGS": "-march=x86-64-v2",
-                "CMAKE_CXX_FLAGS": "-march=x86-64-v2"
-            }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
         },
         {
             "name": "win-amd64-release",
             "displayName": "Windows AMD64 Release",
             "inherits": "windows-base",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_C_FLAGS": "-march=x86-64-v2",
-                "CMAKE_CXX_FLAGS": "-march=x86-64-v2"
-            }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
         },
         {
             "name": "linux-amd64-debug",
