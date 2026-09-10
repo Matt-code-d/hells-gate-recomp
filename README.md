@@ -44,7 +44,7 @@ While AI accelerated the auxiliary workflow, all core architectural decisions, a
 - [x] Game boots, runs, and is fully playable
   - ReXGlue SDK v0.10.0 codegen + native build
   - VMX/AltiVec PowerPC instructions supported
-  - VP6/Bink FMV corruption fixed (upstream PR #426)
+  - VP6/Bink FMV corruption fixed (upstream PR to be made)
   - Save system fixed (fiber/setjmp/longjmp + `XUserFindUsers` handler)
 
 - [x] Graphics & input configured
