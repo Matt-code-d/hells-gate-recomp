@@ -49,11 +49,12 @@ step.
 
 ### 1. Install the required Linux dependencies
 
-Make the provided dependency installer executable and run it:
+Make manifest backup and make the provided dependency installer executable and run it:
 
 ```bash
-chmod +x ./install_dantes_min.sh
-./install_dantes_min.sh
+cp dantes_inferno_manifest.toml dantes_inferno_manifest.toml.back
+chmod +x ./scripts/install_dantes_min.sh
+./scripts/install_dantes_min.sh
 ```
 
 This installs the compiler/toolchain and the development libraries needed by
@@ -160,15 +161,22 @@ The resulting Linux executable is:
 out/build/linux-release/dantes_inferno
 ```
 
+Remove manifest backup:
+
+```bash
+cp dantes_inferno_manifest.toml.back dantes_inferno_manifest.toml
+rm -rf dantes_inferno_manifest.toml.back
+```
+
 ### 9. Run on Linux
 
 From the repository root:
 
 ```bash
-./dantes_inferno_exe.sh
+./scripts/dantes_inferno_exe.sh
 ```
 
-Code .sh is:
+Code `dantes_inferno_exe.sh` is:
 
 ```bash
  LD_LIBRARY_PATH="$PWD/thirdparty/rexglue-sdk/out/linux-amd64:$LD_LIBRARY_PATH" 

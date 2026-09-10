@@ -1,6 +1,6 @@
-
-
-
+# dantes_inferno - ReXGlue Recompiled Project
+#
+# SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
 project(dantes_inferno LANGUAGES CXX)
@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(generated/rexglue.cmake)
 
-
+# Sources
 set(DANTESINFERNO_SOURCES
     src/main.cpp
 )
@@ -22,8 +22,3 @@ else()
 endif()
 
 rexglue_setup_target(dantes_inferno)
-
-
-
-target_include_directories(dantes_inferno PRIVATE
-    thirdparty/rexglue-sdk/thirdparty/imgui)
