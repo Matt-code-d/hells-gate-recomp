@@ -2,6 +2,9 @@ param(
     [string]$SdkDir = "thirdparty\rexglue-sdk"
 )
 
+$ErrorActionPreference = "Continue"
+$PSNativeCommandUseErrorActionPreference = $false
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $sdkPath = Join-Path $projectRoot $SdkDir
 $patchFile = Join-Path $PSScriptRoot "sdk\rexglue-sdk-v0.10.0.patch"

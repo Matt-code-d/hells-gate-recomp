@@ -1,19 +1,8 @@
 
-
-
-
-
-
-
-
-
 #pragma once
 
 #include "dantes_inferno_app.h"
 #include "native_renderer/native_renderer_integration.h"
-
-
-
 
 class DantesInfernoNativeApp : public DantesInfernoApp {
  public:
@@ -29,7 +18,6 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
     
     DantesInfernoApp::OnPostSetup();
 
-    
     if (window()) {
       void* hwnd = window()->GetNativeWindowHandle();
       if (hwnd) {

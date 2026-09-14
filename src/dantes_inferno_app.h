@@ -18,9 +18,17 @@
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
+#include <set>
 #include <sstream>
+#include <string>
 #include <thread>
+#include <vector>
+
+#include <rex/system/kernel_state.h>
+#include <rex/system/xam/content_manager.h>
 
 #include "native_renderer/native_presenter.h"
 
@@ -56,6 +64,18 @@ REXCVAR_DEFINE_BOOL(catching_souls_timing_fix, false, "Diagnostics/Experimental"
                     "Scale only the Catching Souls prompt's per-frame counter increment "
                     "to 60Hz time. Requires engine_base_hz_override>0. Requires restart.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(dlc_trace, false, "Diagnostics",
+                    "Trace DLC module reads, guest callers, and activation (requires restart).")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(dlc_dump_image, false, "Diagnostics",
+                    "Dump the loaded guest image for offline DLC analysis (requires restart).")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_STRING(dlc_source_path, "dlc", "Content",
+                      "Folder scanned for DLC packages to auto-install on launch. "
+                      "If empty or missing, the game runs without DLC.");
 
 class FpsOverlayDialog : public rex::ui::ImGuiDialog {
  public:
@@ -175,9 +195,6 @@ class DantesInfernoApp : public rex::ReXApp {
 
     REXCVAR_SET(input_backend, std::string("sdl"));
 
-    
-    
-    
     if (REXCVAR_GET(engine_base_hz_override) <= 0.0) {
       REXCVAR_SET(engine_base_hz_override, 120.0);
     }
@@ -247,9 +264,84 @@ class DantesInfernoApp : public rex::ReXApp {
 
     auto* ptr = reinterpret_cast<uint32_t*>(membase + 0x82B101E4);
     *ptr = 0u;
+
+    g_dlc_trace_enabled = REXCVAR_GET(dlc_trace);
+    REXLOG_INFO("DLC-TRACE: {}", g_dlc_trace_enabled ? "enabled" : "disabled");
+
+    if (REXCVAR_GET(dlc_dump_image)) {
+      FILE* f = fopen("out\\build\\win-amd64-release\\logs\\guest_image.bin", "wb");
+      if (f) {
+        fwrite(membase + 0x82000000, 1, 0xD70000, f);
+        fclose(f);
+        REXLOG_INFO("DLC-MOD: dumped guest image");
+      }
+    }
+  }
+
+  void AutoInstallDlc() {
+    auto* kernel_state = runtime() ? runtime()->kernel_state() : nullptr;
+    auto* content_manager = kernel_state ? kernel_state->content_manager() : nullptr;
+    if (!content_manager) {
+      REXLOG_WARN("DLC auto-install skipped: content manager unavailable");
+      return;
+    }
+
+    std::string dlc_path = REXCVAR_GET(dlc_source_path);
+    if (dlc_path.empty()) dlc_path = "dlc";
+    std::filesystem::path root(dlc_path);
+    if (!std::filesystem::exists(root)) {
+      REXLOG_INFO("DLC folder not found ({}); running without DLC", dlc_path);
+      return;
+    }
+
+    std::filesystem::path marker = root / ".installed";
+    std::set<std::string> installed;
+    if (std::filesystem::exists(marker)) {
+      std::ifstream in(marker);
+      std::string line;
+      while (std::getline(in, line)) {
+        if (!line.empty()) installed.insert(line);
+      }
+    }
+
+    std::vector<std::filesystem::path> packages;
+    for (auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+      if (entry.is_regular_file()) {
+        auto name = entry.path().filename().string();
+        if (name == ".installed") continue;
+        packages.push_back(entry.path());
+      }
+    }
+
+    if (packages.empty()) {
+      REXLOG_INFO("DLC folder empty ({}); running without DLC", dlc_path);
+      return;
+    }
+
+    int new_installed = 0;
+    for (auto& pkg : packages) {
+      auto rel = std::filesystem::relative(pkg, root).string();
+      if (installed.count(rel)) continue;
+
+      REXLOG_INFO("Installing DLC package: {}", rel);
+      auto result = content_manager->InstallContent(pkg);
+      if (XSUCCEEDED(result)) {
+        installed.insert(rel);
+        new_installed++;
+        std::ofstream out(marker, std::ios::app);
+        out << rel << "\n";
+      } else {
+        REXLOG_WARN("DLC install failed for {}: 0x{:08X}", rel, result);
+      }
+    }
+
+    REXLOG_INFO("DLC auto-install complete: {} new, {} total", new_installed,
+                installed.size());
   }
 
   void OnPostSetup() override {
+    AutoInstallDlc();
+
     rex::chrono::Clock::set_guest_time_scalar(REXCVAR_GET(time_scalar));
 
     rex::cvar::RegisterChangeCallback("time_scalar",

@@ -13,27 +13,172 @@
 #include <csetjmp>
 #include <string_view>
 #include <unordered_map>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xfile.h>
+#include <rex/system/xmemory.h>
+#include <rex/system/xthread.h>
+
+inline bool g_dlc_trace_enabled = false;
+inline std::atomic<uint32_t> g_dlc_trace_events{0};
+inline thread_local uint32_t g_dlc_trace_read = 0;
+
+inline bool DlcTraceReadWord(uint32_t address, uint32_t& value) {
+  auto* kernel = REX_KERNEL_STATE();
+  if (!kernel || (address & 3) || address > UINT32_MAX - 4) return false;
+  auto* memory = kernel->memory();
+  auto* heap = memory->LookupHeap(address);
+  rex::memory::HeapAllocationInfo info{};
+  if (!heap || !heap->QueryRegionInfo(address, &info) ||
+      !(info.state & rex::memory::kMemoryAllocationCommit) ||
+      !(info.protect & rex::memory::kMemoryProtectRead) ||
+      uint64_t(address) + 4 > uint64_t(info.base_address) + info.region_size) return false;
+  value = std::byteswap(*memory->TranslateVirtual<const uint32_t*>(address));
+  return true;
+}
+
+inline uint32_t DlcTraceEvent(const char* stage, uint32_t sp, uint32_t lr,
+                              uint32_t object) {
+  if (!g_dlc_trace_enabled) return 0;
+  uint32_t id = g_dlc_trace_events.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (id > 128) {
+    if (id == 129) REXLOG_INFO("DLC-TRACE: event limit reached (128)");
+    return 0;
+  }
+  uint32_t slot = 0, flags = 0;
+  DlcTraceReadWord(0x829B5478, slot);
+  DlcTraceReadWord(0x829B557C, flags);
+  REXLOG_INFO("DLC-TRACE: id={} stage={} thread={:08X} object={:08X} sp={:08X} "
+              "lr={:08X} current_word={:08X} current_flag={}",
+              id, stage, rex::system::XThread::GetCurrentThreadId(), object, sp,
+              lr, slot, (flags >> 8) & 0xFF);
+  uint32_t frame = sp;
+  for (uint32_t depth = 0; depth < 16; ++depth) {
+    uint32_t parent = 0, saved_lr = 0;
+    if (!DlcTraceReadWord(frame, parent) || parent <= frame ||
+        uint64_t(parent) - sp > 0x100000 || (parent & 15) ||
+        !DlcTraceReadWord(parent - 8, saved_lr)) break;
+    REXLOG_INFO("DLC-TRACE: id={} frame={} sp={:08X} parent={:08X} saved_lr={:08X}",
+                id, depth, frame, parent, saved_lr);
+    frame = parent;
+  }
+  return id;
+}
+
+inline void DlcTraceReadBegin(rex::ppc::Register& r1, rex::ppc::Register& r3,
+                              rex::ppc::Register& r8, rex::ppc::Register& r9,
+                              rex::ppc::Register& r10) {
+  g_dlc_trace_read = 0;
+  if (!g_dlc_trace_enabled) return;
+  auto* kernel = REX_KERNEL_STATE();
+  if (!kernel) return;
+  auto file = kernel->object_table()->LookupObject<rex::system::XFile>(r3.u32);
+  if (!file || !file->entry()) return;
+  std::string name = file->name();
+  for (char& c : name) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+  if (!name.ends_with(".dlm") && !name.ends_with(".lu2")) return;
+  g_dlc_trace_read = DlcTraceEvent("module-read", r1.u32, 0x826AB810, r3.u32);
+  if (!g_dlc_trace_read) return;
+  uint32_t offset_hi = 0, offset_lo = 0;
+  DlcTraceReadWord(r10.u32, offset_hi);
+  if (r10.u32 <= UINT32_MAX - 4) DlcTraceReadWord(r10.u32 + 4, offset_lo);
+  REXLOG_INFO("DLC-TRACE: id={} file={} buffer={:08X} requested={} offset={:08X}{:08X}",
+              g_dlc_trace_read, file->path(), r8.u32, r9.u32, offset_hi, offset_lo);
+}
+
+inline void DlcTraceReadEnd(rex::ppc::Register& r1, rex::ppc::Register& r3) {
+  if (!g_dlc_trace_enabled || !g_dlc_trace_read) return;
+  uint32_t status = 0, bytes = 0;
+  if (r1.u32 <= UINT32_MAX - 84) {
+    DlcTraceReadWord(r1.u32 + 80, status);
+    DlcTraceReadWord(r1.u32 + 84, bytes);
+  }
+  REXLOG_INFO("DLC-TRACE: id={} stage=read-complete result={:08X} iosb={:08X} bytes={}",
+              g_dlc_trace_read, r3.u32, status, bytes);
+  g_dlc_trace_read = 0;
+}
+
+inline std::string DlcTraceText(uint32_t address) {
+  std::string text;
+  for (uint32_t i = 0; i < 96 && address <= UINT32_MAX - i; ++i) {
+    uint32_t word = 0, at = address + i;
+    if (!DlcTraceReadWord(at & ~3u, word)) break;
+    char c = static_cast<char>((word >> ((3 - (at & 3)) * 8)) & 0xFF);
+    if (!c) break;
+    text += (c >= 32 && c <= 126) ? c : '.';
+  }
+  return text;
+}
+
+inline void DlcTraceCommand(rex::ppc::Register& r1, rex::ppc::Register& r3,
+                            rex::ppc::Register& r12) {
+  if (!g_dlc_trace_enabled) return;
+  static std::atomic<uint32_t> calls{0};
+  if (calls.fetch_add(1, std::memory_order_relaxed) >= 32) return;
+  uint32_t id = DlcTraceEvent("command-entry", r1.u32, r12.u32, r3.u32);
+  if (id) REXLOG_INFO("DLC-TRACE: id={} command={}", id, DlcTraceText(r3.u32));
+}
+
+inline void DlcTraceDispatch(rex::ppc::Register& r1, rex::ppc::Register& r3,
+                             rex::ppc::Register& r11, rex::ppc::Register& r28,
+                             rex::ppc::Register& r31) {
+  if (!g_dlc_trace_enabled) return;
+  static std::atomic<uint32_t> calls{0};
+  if (calls.fetch_add(1, std::memory_order_relaxed) >= 32) return;
+  uint32_t id = DlcTraceEvent("command-dispatch", r1.u32, 0x8266E844, r3.u32);
+  if (id) REXLOG_INFO("DLC-TRACE: id={} index={} target={:08X} name={} argument={}",
+                      id, r28.u32, r11.u32, DlcTraceText(r31.u32), DlcTraceText(r3.u32));
+}
+
+inline void DlcTraceSetCurrent(rex::ppc::Register& r1, rex::ppc::Register& r3,
+                               rex::ppc::Register& r12) {
+  DlcTraceEvent("set-current", r1.u32, r12.u32, r3.u32);
+}
+
+inline void DlcTraceActivationGate(rex::ppc::Register& r1, rex::ppc::Register& r3,
+                                   rex::ppc::Register& r12) {
+  if (!g_dlc_trace_enabled) return;
+  static std::atomic<uint32_t> calls{0};
+  if (calls.fetch_add(1, std::memory_order_relaxed) < 32)
+    DlcTraceEvent("activation-gate", r1.u32, r12.u32, r3.u32);
+}
 
 inline thread_local jmp_buf g_fiber_jmp_buf;
 inline thread_local uint32_t g_setjmp_ctx_addr = 0;
 inline thread_local uint32_t g_longjmp_return_value = 0;
-
+inline thread_local bool g_fiber_setjmp_active = false;
+inline thread_local void* g_fiber_setjmp_sp = nullptr;
 
 inline thread_local uint32_t g_current_sdbm_id = 0;
 inline thread_local uint32_t g_current_sdbm_producer = 0;
 
 inline int FiberSetjmp(uint32_t ctx_addr) {
   g_setjmp_ctx_addr = ctx_addr;
+  g_fiber_setjmp_active = true;
   int ret = setjmp(g_fiber_jmp_buf);
   if (ret != 0) {
     REXLOG_INFO("FIBER: setjmp returning from longjmp (ret={})", ret);
+    g_fiber_setjmp_active = false;
+  } else {
+    int dummy;
+    g_fiber_setjmp_sp = &dummy;
   }
   return ret;
 }
 
 inline void FiberLongjmp(uint32_t return_value) {
   g_longjmp_return_value = return_value;
-  REXLOG_INFO("FIBER: longjmp called with return_value={}", return_value);
+  int current_sp;
+  void* current_sp_ptr = &current_sp;
+  bool sp_valid = g_fiber_setjmp_active &&
+                  g_fiber_setjmp_sp != nullptr &&
+                  current_sp_ptr <= g_fiber_setjmp_sp;
+  REXLOG_INFO("FIBER: longjmp called with return_value={} active={} sp_valid={} cur_sp={} saved_sp={}",
+              return_value, g_fiber_setjmp_active, sp_valid, current_sp_ptr, g_fiber_setjmp_sp);
+  if (!sp_valid) {
+    REXLOG_WARN("FIBER: longjmp with invalid/expired setjmp - skipping (DLC/content path)");
+    g_fiber_setjmp_active = false;
+    return;
+  }
   longjmp(g_fiber_jmp_buf, 1);
 }
 
@@ -78,11 +223,6 @@ inline void UltrawideXScaleHook(rex::ppc::Register& f12) {
     f12.f64 = f12.f64 * scale;
   }
 }
-
-
-
-
-
 
 struct SdbmMessage {
   uint32_t hash;
@@ -161,8 +301,6 @@ static_assert(kSdbmMessages[26].hash == SdbmHashCaseInsensitive("iMsgVideoStop")
 static_assert(kSdbmMessages[27].hash == SdbmHashCaseInsensitive("iMsgMovieStarted"));
 static_assert(kSdbmMessages[28].hash == SdbmHashCaseInsensitive("iMsgMovieEnded"));
 static_assert(kSdbmMessages[29].hash == SdbmHashCaseInsensitive("iMsgMoviePlayerEnded"));
-
-
 
 constexpr std::array<std::string_view, 19> kSdbmTrackedHandlerNames = {
     "RunningPreTick", "RunningTick", "RunningPostTick",
@@ -255,7 +393,6 @@ struct DiagSnapshot {
   std::array<uint32_t, 32> sdbm_unknown_ids{};
   std::array<uint64_t, 32> sdbm_unknown_counts{};
 
-  
   std::array<uint32_t, kSdbmHandlerTableSize> sdbm_handler_ids{};
   std::array<uint32_t, kSdbmHandlerTableSize> sdbm_handler_producers{};
   std::array<uint32_t, kSdbmHandlerTableSize> sdbm_handler_targets{};
@@ -263,18 +400,15 @@ struct DiagSnapshot {
   std::array<uint64_t, kSdbmHandlerTableSize> sdbm_handler_counts{};
   uint64_t sdbm_handler_overflow_count = 0;
 
-  
   std::array<uint64_t, 8> ui_fix_site_counts{};
   std::array<float, 8> ui_fix_site_original{};
   std::array<float, 8> ui_fix_site_applied{};
 
-  
   uint64_t catching_souls_hit_count = 0;
   float catching_souls_original_increment = 0.0f;
   float catching_souls_scaled_increment = 0.0f;
   float catching_souls_factor = 1.0f;
 
-  
   uint64_t absolve_timer_increment_calls = 0;
   float absolve_timer_last_original = 0.0f;
   float absolve_timer_last_scaled = 0.0f;
@@ -345,12 +479,10 @@ inline struct DiagCounters {
   std::atomic<float> base_hz_reader_value{0.0f};
   std::atomic<uint64_t> base_hz_reader_hook_count{0};
 
-  
   std::atomic<uint32_t> mode_byte_value{0};
   std::atomic<uint32_t> mode_byte_object{0};
   std::atomic<uint64_t> mode_byte_transitions{0};
 
-  
   std::atomic<uint64_t> onethirty_a_count{0};
   std::atomic<float> onethirty_a_value{0.0f};
   std::atomic<uint32_t> onethirty_a_object{0};
@@ -358,15 +490,12 @@ inline struct DiagCounters {
   std::atomic<float> onethirty_b_value{0.0f};
   std::atomic<uint32_t> onethirty_b_object{0};
 
-  
   struct SdbmUnknownSlot {
     std::atomic<uint32_t> id{UINT32_MAX};
     std::atomic<uint64_t> count{0};
   };
   std::array<SdbmUnknownSlot, 32> sdbm_unknown_slots{};
 
-  
-  
   struct SdbmHandlerSlot {
     std::atomic<uint32_t> id{UINT32_MAX};
     std::atomic<uint32_t> producer{0};
@@ -377,18 +506,15 @@ inline struct DiagCounters {
   std::array<SdbmHandlerSlot, kSdbmHandlerTableSize> sdbm_handler_table{};
   std::atomic<uint64_t> sdbm_handler_overflow_count{0};
 
-  
   std::array<std::atomic<uint64_t>, 8> ui_fix_site_counts{};
   std::array<std::atomic<float>, 8> ui_fix_site_original{};
   std::array<std::atomic<float>, 8> ui_fix_site_applied{};
 
-  
   std::atomic<uint64_t> catching_souls_hit_count{0};
   std::atomic<float> catching_souls_original_increment{0.0f};
   std::atomic<float> catching_souls_scaled_increment{0.0f};
   std::atomic<float> catching_souls_factor{1.0f};
 
-  
   std::atomic<uint64_t> absolve_timer_increment_calls{0};
   std::atomic<float> absolve_timer_last_original{0.0f};
   std::atomic<float> absolve_timer_last_scaled{0.0f};
@@ -690,8 +816,6 @@ inline void DiagSdbmHandlerCall(rex::ppc::Register& r11,
                                 rex::ppc::Register& r3,
                                 rex::ppc::Register& r4) {
   
-  
-  
   (void)r4;
   const uint32_t id = g_current_sdbm_id;
   const uint32_t producer = g_current_sdbm_producer;
@@ -775,10 +899,6 @@ inline double GetTimingHz() {
   return 60.0;
 }
 
-
-
-
-
 inline double GetCatchingSoulsHz() {
   const double hz = GetTimingHz();
   if (rex::cvar::Query<bool>("catching_souls_timing_fix") &&
@@ -793,8 +913,6 @@ inline void DiagUiTimingReader(rex::ppc::Register& value, size_t site) {
   float applied = original;
   if (rex::cvar::Query<bool>("ui_timing_fix") &&
       rex::cvar::Query<double>("engine_base_hz_override") > 0.0) {
-    
-    
     
     applied = static_cast<float>(GetTimingHz());
     value.f64 = applied;
@@ -812,8 +930,6 @@ inline void DiagUiHz827B55D0(rex::ppc::Register& f13) { DiagUiTimingReader(f13, 
 inline void DiagUiHz827B2CD0(rex::ppc::Register& f0) { DiagUiTimingReader(f0, 5); }
 inline void DiagUiHz827B2CF0(rex::ppc::Register& f13) { DiagUiTimingReader(f13, 6); }
 inline void DiagUiHz827B51EC(rex::ppc::Register& f13) { DiagUiTimingReader(f13, 7); }
-
-
 
 inline thread_local double g_catching_souls_paused_tick_accumulator = 0.0;
 inline bool CatchingSoulsTimingFix(rex::ppc::Register& r11) {
@@ -848,8 +964,6 @@ inline bool CatchingSoulsTimingFix(rex::ppc::Register& r11) {
   return true;
 }
 
-
-
 inline void DiagModeByteLoad(rex::ppc::Register& r11, rex::ppc::Register& r27) {
   const uint32_t value = r11.u32 & 0xFF;
   const uint32_t prev = g_diag_counters.mode_byte_value.load(std::memory_order_relaxed);
@@ -859,9 +973,6 @@ inline void DiagModeByteLoad(rex::ppc::Register& r11, rex::ppc::Register& r27) {
     g_diag_counters.mode_byte_transitions.fetch_add(1, std::memory_order_relaxed);
   }
 }
-
-
-
 
 inline double ScaleTimeStep(double value, double hz, double base_hz = 60.0) {
   if (hz <= 0.0) {
@@ -888,11 +999,6 @@ inline double ScaleTimeStep(double value, double hz, double base_hz = 60.0) {
   return value * (base_hz / hz);
 }
 
-
-
-
-
-
 inline double ScaleFrameStep(double value, double hz, double base_hz = 30.0) {
   if (hz <= 0.0 || !std::isfinite(hz) || !std::isfinite(value)) {
     return value;
@@ -917,10 +1023,6 @@ inline double ScaleFrameStep(double value, double hz, double base_hz = 30.0) {
   return value * (base_hz / hz);
 }
 
-
-
-
-
 inline void DiagOneThirtyLoadA(rex::ppc::Register& f8, rex::ppc::Register& r5) {
   if (rex::cvar::Query<bool>("ui_timing_fix")) {
     f8.f64 = ScaleTimeStep(f8.f64, GetTimingHz(), 30.0);
@@ -929,7 +1031,6 @@ inline void DiagOneThirtyLoadA(rex::ppc::Register& f8, rex::ppc::Register& r5) {
   g_diag_counters.onethirty_a_value.store(static_cast<float>(f8.f64), std::memory_order_relaxed);
   g_diag_counters.onethirty_a_object.store(r5.u32, std::memory_order_relaxed);
 }
-
 
 inline void DiagOneThirtyLoadB(rex::ppc::Register& f9, rex::ppc::Register& r6) {
   if (rex::cvar::Query<bool>("ui_timing_fix")) {
@@ -940,16 +1041,11 @@ inline void DiagOneThirtyLoadB(rex::ppc::Register& f9, rex::ppc::Register& r6) {
   g_diag_counters.onethirty_b_object.store(r6.u32, std::memory_order_relaxed);
 }
 
-
-
-
-
 inline void DiagUiStep8243F278(rex::ppc::Register& f0) {
   if (rex::cvar::Query<bool>("ui_timing_fix")) {
     f0.f64 = ScaleFrameStep(f0.f64, GetTimingHz(), 0.0);
   }
 }
-
 
 inline void DiagUiStep8243F2C0(rex::ppc::Register& f12) {
   if (rex::cvar::Query<bool>("ui_timing_fix")) {
@@ -960,8 +1056,6 @@ inline void DiagUiStep8243F2C0(rex::ppc::Register& f12) {
 inline std::atomic<uint32_t> g_absolve_object{0};
 inline std::atomic<uint32_t> g_absolve_state_object{0};
 
-
-
 inline void DiagAbsolveSingleton(rex::ppc::Register& ptr) {
   const uint32_t previous = g_absolve_object.load(std::memory_order_relaxed);
   const uint32_t current = ptr.u32;
@@ -970,9 +1064,6 @@ inline void DiagAbsolveSingleton(rex::ppc::Register& ptr) {
     REXLOG_INFO("DIAG_ABSOLVE_SINGLETON pointer={:08X}", current);
   }
 }
-
-
-
 
 inline void DiagAbsolveStateWrite(rex::ppc::Register& value,
                                   rex::ppc::Register& object,
@@ -998,9 +1089,6 @@ inline void DiagAbsolveRollStateWrite(rex::ppc::Register& r10,
   DiagAbsolveStateWrite(r10, r31, 2);
 }
 
-
-
-
 inline void DiagAbsolveTimerIncrement(rex::ppc::Register& f0) {
   const double original = f0.f64;
   const double hz = GetCatchingSoulsHz();
@@ -1013,11 +1101,8 @@ inline void DiagAbsolveTimerIncrement(rex::ppc::Register& f0) {
       1, std::memory_order_relaxed);
 }
 
-
-
 inline void AbsolvePromptTimerIncrement(rex::ppc::Register& f0) {
   const double original = f0.f64;
-  
   
   g_diag_counters.absolve_prompt_timer_last_original.store(
       static_cast<float>(original), std::memory_order_relaxed);
@@ -1027,11 +1112,8 @@ inline void AbsolvePromptTimerIncrement(rex::ppc::Register& f0) {
       1, std::memory_order_relaxed);
 }
 
-
-
 inline void AbsolveRollTimeStep(rex::ppc::Register& f0) {
   const double original = f0.f64;
-  
   
   f0.f64 = ScaleFrameStep(original, GetTimingHz(), 0.0);
   g_diag_counters.absolve_roll_step_last_original.store(
@@ -1042,19 +1124,12 @@ inline void AbsolveRollTimeStep(rex::ppc::Register& f0) {
       1, std::memory_order_relaxed);
 }
 
-
-
-
-
 struct Throttle6eState {
   uint8_t last = 0;
   double acc = 0.0;
 };
 inline thread_local std::unordered_map<uint32_t, Throttle6eState>
     g_absolve_6e_state;
-
-
-
 
 inline void Absolve6eThrottle(rex::ppc::Register& r11,
                               rex::ppc::Register& r29) {
@@ -1081,9 +1156,6 @@ inline void Absolve6eThrottle(rex::ppc::Register& r11,
 
 inline thread_local double g_absolve_table_counter = 0.0;
 
-
-
-
 inline void AbsolveTableRamp(rex::ppc::Register& r8) {
   g_absolve_table_counter += 60.0 / GetTimingHz();
   const uint32_t idx = static_cast<uint32_t>(g_absolve_table_counter) & 0xFF;
@@ -1092,16 +1164,11 @@ inline void AbsolveTableRamp(rex::ppc::Register& r8) {
 
 inline thread_local double g_absolve_roll_table_counter = 0.0;
 
-
-
-
 inline void AbsolveRollRamp(rex::ppc::Register& r7) {
   g_absolve_roll_table_counter += 30.0 / GetTimingHz();
   const uint32_t idx = static_cast<uint32_t>(g_absolve_roll_table_counter) & 0xFF;
   r7.u32 = idx << 2;
 }
-
-
 
 inline void DiagAbsolveUpdateVTable(rex::ppc::Register& r11,
                                     rex::ppc::Register& r3) {
@@ -1110,7 +1177,6 @@ inline void DiagAbsolveUpdateVTable(rex::ppc::Register& r11,
 }
 
 inline thread_local uint64_t g_absolve_timer_sample_count = 0;
-
 
 inline thread_local std::unordered_map<uint32_t, std::pair<double, double>>
     g_absolve_prompt_prev;
@@ -1129,9 +1195,6 @@ inline void DiagAbsolvePromptTimer(rex::ppc::Register& f1,
       static_cast<float>(f0.f64), std::memory_order_relaxed);
   g_diag_counters.absolve_prompt_timer_last_object.store(
       r3.u32, std::memory_order_relaxed);
-
-  
-  
 
   const uint32_t singleton = g_absolve_object.load(std::memory_order_relaxed);
   if (count % 120 == 0) {

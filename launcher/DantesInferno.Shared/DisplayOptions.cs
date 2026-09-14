@@ -204,6 +204,42 @@ namespace DantesInferno
             if (config.GlyphFamily.Equals("playstation", StringComparison.OrdinalIgnoreCase))
                 args.Add("--glyph_family=playstation");
 
+            if (config.UserLanguage != 1)
+                args.Add(string.Format(CultureInfo.InvariantCulture, "--user_language={0}", config.UserLanguage));
+
+            var keybinds = new Dictionary<string, string>
+            {
+                { "keybind_a", config.KeybindA },
+                { "keybind_b", config.KeybindB },
+                { "keybind_x", config.KeybindX },
+                { "keybind_y", config.KeybindY },
+                { "keybind_left_shoulder", config.KeybindLeftShoulder },
+                { "keybind_right_shoulder", config.KeybindRightShoulder },
+                { "keybind_left_trigger", config.KeybindLeftTrigger },
+                { "keybind_right_trigger", config.KeybindRightTrigger },
+                { "keybind_lstick_up", config.KeybindLStickUp },
+                { "keybind_lstick_down", config.KeybindLStickDown },
+                { "keybind_lstick_left", config.KeybindLStickLeft },
+                { "keybind_lstick_right", config.KeybindLStickRight },
+                { "keybind_lstick_press", config.KeybindLStickPress },
+                { "keybind_rstick_up", config.KeybindRStickUp },
+                { "keybind_rstick_down", config.KeybindRStickDown },
+                { "keybind_rstick_left", config.KeybindRStickLeft },
+                { "keybind_rstick_right", config.KeybindRStickRight },
+                { "keybind_rstick_press", config.KeybindRStickPress },
+                { "keybind_dpad_up", config.KeybindDpadUp },
+                { "keybind_dpad_down", config.KeybindDpadDown },
+                { "keybind_dpad_left", config.KeybindDpadLeft },
+                { "keybind_dpad_right", config.KeybindDpadRight },
+                { "keybind_back", config.KeybindBack },
+                { "keybind_start", config.KeybindStart },
+            };
+            foreach (var kv in keybinds)
+            {
+                if (!string.IsNullOrEmpty(kv.Value))
+                    args.Add(string.Format("--{0}={1}", kv.Key, kv.Value));
+            }
+
             return string.Join(" ", args);
         }
     }

@@ -83,6 +83,9 @@
     <Compile Include="..\DantesInferno.Shared\GitHubUpdater.cs">
       <Link>Shared\GitHubUpdater.cs</Link>
     </Compile>
+    <Compile Include="..\DantesInferno.Shared\LauncherLocalizer.cs">
+      <Link>Shared\LauncherLocalizer.cs</Link>
+    </Compile>
     <Compile Include="..\DantesInferno.Shared\PathHelper.cs">
       <Link>Shared\PathHelper.cs</Link>
     </Compile>

@@ -186,9 +186,46 @@ namespace DantesInferno
 
         public string Renderer
         {
-            get { return this["renderer"] ?? DisplayOptions.RendererReXGlue; }
+            get { return this["renderer"] ?? DisplayOptions.RendererNative; }
             set { this["renderer"] = value; }
         }
+
+        public uint UserLanguage
+        {
+            get { return Get("user_language", 1u); }
+            set { Set("user_language", value); }
+        }
+
+        public string LauncherLanguage
+        {
+            get { return this["launcher_language"] ?? LauncherLocalizer.DefaultLanguage; }
+            set { this["launcher_language"] = LauncherLocalizer.NormalizeLanguage(value); }
+        }
+
+        public string KeybindA { get { return this["keybind_a"] ?? "Space"; } set { this["keybind_a"] = value; } }
+        public string KeybindB { get { return this["keybind_b"] ?? "F"; } set { this["keybind_b"] = value; } }
+        public string KeybindX { get { return this["keybind_x"] ?? "MouseLeft"; } set { this["keybind_x"] = value; } }
+        public string KeybindY { get { return this["keybind_y"] ?? "E"; } set { this["keybind_y"] = value; } }
+        public string KeybindLeftShoulder { get { return this["keybind_left_shoulder"] ?? "Q"; } set { this["keybind_left_shoulder"] = value; } }
+        public string KeybindRightShoulder { get { return this["keybind_right_shoulder"] ?? "MouseRight"; } set { this["keybind_right_shoulder"] = value; } }
+        public string KeybindLeftTrigger { get { return this["keybind_left_trigger"] ?? "Shift"; } set { this["keybind_left_trigger"] = value; } }
+        public string KeybindRightTrigger { get { return this["keybind_right_trigger"] ?? "Ctrl"; } set { this["keybind_right_trigger"] = value; } }
+        public string KeybindLStickUp { get { return this["keybind_lstick_up"] ?? "W"; } set { this["keybind_lstick_up"] = value; } }
+        public string KeybindLStickDown { get { return this["keybind_lstick_down"] ?? "S"; } set { this["keybind_lstick_down"] = value; } }
+        public string KeybindLStickLeft { get { return this["keybind_lstick_left"] ?? "A"; } set { this["keybind_lstick_left"] = value; } }
+        public string KeybindLStickRight { get { return this["keybind_lstick_right"] ?? "D"; } set { this["keybind_lstick_right"] = value; } }
+        public string KeybindLStickPress { get { return this["keybind_lstick_press"] ?? "X"; } set { this["keybind_lstick_press"] = value; } }
+        public string KeybindRStickUp { get { return this["keybind_rstick_up"] ?? "Up"; } set { this["keybind_rstick_up"] = value; } }
+        public string KeybindRStickDown { get { return this["keybind_rstick_down"] ?? "Down"; } set { this["keybind_rstick_down"] = value; } }
+        public string KeybindRStickLeft { get { return this["keybind_rstick_left"] ?? "Left"; } set { this["keybind_rstick_left"] = value; } }
+        public string KeybindRStickRight { get { return this["keybind_rstick_right"] ?? "Right"; } set { this["keybind_rstick_right"] = value; } }
+        public string KeybindRStickPress { get { return this["keybind_rstick_press"] ?? "R"; } set { this["keybind_rstick_press"] = value; } }
+        public string KeybindDpadUp { get { return this["keybind_dpad_up"] ?? "Shift+Up"; } set { this["keybind_dpad_up"] = value; } }
+        public string KeybindDpadDown { get { return this["keybind_dpad_down"] ?? "Shift+Down"; } set { this["keybind_dpad_down"] = value; } }
+        public string KeybindDpadLeft { get { return this["keybind_dpad_left"] ?? "Shift+Left"; } set { this["keybind_dpad_left"] = value; } }
+        public string KeybindDpadRight { get { return this["keybind_dpad_right"] ?? "Shift+Right"; } set { this["keybind_dpad_right"] = value; } }
+        public string KeybindBack { get { return this["keybind_back"] ?? "Tab"; } set { this["keybind_back"] = value; } }
+        public string KeybindStart { get { return this["keybind_start"] ?? "Escape"; } set { this["keybind_start"] = value; } }
 
         public bool Remove(string key)
         {

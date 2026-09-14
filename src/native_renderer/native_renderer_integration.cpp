@@ -1,10 +1,4 @@
 
-
-
-
-
-
-
 #include "native_renderer_integration.h"
 #include "native_device.h"
 

@@ -39,5 +39,15 @@ namespace DantesInferno
         {
             return Path.Combine(installDirectory, "logs");
         }
+
+        public static string GetDlcPath(string installDirectory)
+        {
+            return Path.Combine(installDirectory, "dlc");
+        }
+
+        public static string GetTitleUpdatePath(string installDirectory)
+        {
+            return Path.Combine(installDirectory, "game", "default.xexp");
+        }
     }
 }

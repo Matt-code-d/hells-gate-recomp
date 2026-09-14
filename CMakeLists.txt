@@ -22,3 +22,7 @@ else()
 endif()
 
 rexglue_setup_target(dantes_inferno)
+
+if(TARGET imgui::imgui)
+    target_link_libraries(dantes_inferno PRIVATE imgui::imgui)
+endif()

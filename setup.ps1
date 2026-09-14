@@ -1,8 +1,4 @@
 
-
-
-
-
 $ErrorActionPreference = "Stop"
 
 $root   = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -10,7 +6,6 @@ $sdkDir = Join-Path $root "thirdparty\rexglue-sdk"
 $tag    = "v0.10.0"
 
 Write-Host "== Dante's Inferno - ReXGlue project setup ==" -ForegroundColor Cyan
-
 
 foreach ($tool in @("git", "cmake", "ninja", "clang")) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
@@ -20,7 +15,6 @@ foreach ($tool in @("git", "cmake", "ninja", "clang")) {
     }
 }
 Write-Host "Prerequisites OK." -ForegroundColor Green
-
 
 if (Test-Path (Join-Path $sdkDir ".git")) {
     Write-Host "SDK already cloned at $sdkDir"
@@ -33,7 +27,6 @@ if (Test-Path (Join-Path $sdkDir ".git")) {
 Write-Host "Initializing SDK submodules (this can take a while) ..."
 git -C $sdkDir submodule update --init --recursive --depth 1
 if ($LASTEXITCODE -ne 0) { throw "submodule init failed" }
-
 
 $applySdkPatches = Join-Path $root "patches\apply_sdk_patches.ps1"
 if (Test-Path $applySdkPatches) {

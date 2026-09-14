@@ -18,7 +18,7 @@
         <Border Grid.Column="1" BorderBrush="{StaticResource BorderBrush}" BorderThickness="2,0,0,0">
             <TabControl x:Name="MainTabControl" Margin="15">
 
-                <TabItem Header="PLAY">
+                <TabItem x:Name="TabPlay" Header="PLAY">
                     <Grid Margin="10">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
@@ -26,29 +26,198 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <TextBlock Text="Ready to enter the Nine Circles." FontSize="20" FontWeight="Bold" Margin="0,0,0,15" />
+                        <TextBlock x:Name="PlaySubtitleText" Text="Ready to enter the Nine Circles." FontSize="20" FontWeight="Bold" Margin="0,0,0,15" />
                         <StackPanel Grid.Row="1" VerticalAlignment="Center">
                             <TextBlock x:Name="PlayStatusText" Text="Game files found." FontSize="14" Margin="0,0,0,20" />
                             <Button x:Name="PlayButton" Content="PLAY" FontSize="36" Padding="20,10" Width="200" Height="80" Click="PlayButton_Click" />
-                            <Button Content="EXIT" FontSize="14" Padding="10,5" Width="120" Margin="0,15,0,0" Click="ExitButton_Click" />
+                            <Button x:Name="ExitButton" Content="EXIT" FontSize="14" Padding="10,5" Width="120" Margin="0,15,0,0" Click="ExitButton_Click" />
                         </StackPanel>
                         <StackPanel Grid.Row="2" Margin="0,10">
                             <TextBlock x:Name="PlayNoteText" Text="" FontSize="11" Opacity="0.7" Margin="0,5" />
                         </StackPanel>
                         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,10,0,0">
-                            <Button Content="Support the Developer" Click="SupportButton_Click" />
+                            <Button x:Name="SupportButton" Content="Support the Developer" Click="SupportButton_Click" />
                         </StackPanel>
-                        <TextBlock x:Name="VersionText" Grid.Row="3" Text="Version: 0.3.2-alpha" FontSize="12" Opacity="0.7" HorizontalAlignment="Right" />
+                        <TextBlock x:Name="VersionText" Grid.Row="3" Text="Version: 0.6.0-beta" FontSize="12" Opacity="0.7" HorizontalAlignment="Right" />
                     </Grid>
                 </TabItem>
 
-                <TabItem Header="SETTINGS">
+                <TabItem x:Name="TabDlc" Header="DLC">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0">
+                        <StackPanel Margin="10">
+                            <TextBlock x:Name="DlcTitleText" Text="Downloadable Content" FontSize="20" FontWeight="Bold" Margin="0,0,0,10" />
+                            <TextBlock x:Name="DlcDescriptionText" TextWrapping="Wrap" Margin="0,0,0,15" Opacity="0.85"
+                                       Text="To install DLC, copy your DLC STFS package files into the DLC folder, then launch the game. The game will automatically install them on startup." />
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <Button x:Name="OpenDlcFolderButton" Content="Open DLC Folder" Width="150" Click="OpenDlcFolder_Click" Margin="0,0,10,0" />
+                                <Button x:Name="OpenTuFolderButton" Content="Open TU Folder" Width="150" Click="OpenTuFolder_Click" Margin="0,0,10,0"
+                                        ToolTip="Opens the game folder where default.xexp (Title Update) must be placed." />
+                            </StackPanel>
+                            <TextBlock x:Name="DlcStatusText" Text="" FontSize="12" Opacity="0.7" Margin="0,5,0,20" />
+
+                            <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="15" Margin="0,0,0,10" Background="{StaticResource BackgroundPanel}">
+                                <StackPanel>
+                                    <TextBlock x:Name="TrialsServerTitleText" Text="Trials of Saint Lucia - Online Server" FontSize="16" FontWeight="Bold" Margin="0,0,0,8" />
+                                    <TextBlock x:Name="TrialsServerMessageText" TextWrapping="Wrap" Margin="0,0,0,12" Opacity="0.85"
+                                               Text="A dedicated server for the Trials of Saint Lucia DLC is currently in development and will launch in the coming days or weeks. Due to server costs, access will be limited to Ko-Fi members for now. Keep an eye on our Discord for the launch announcement." />
+                                    <Button x:Name="TrialsServerButton" Content="Support on Ko-Fi" Width="160" HorizontalAlignment="Left" Click="TrialsServerButton_Click" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem x:Name="TabControls" Header="CONTROLS">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0">
+                        <StackPanel Margin="10">
+                            <TextBlock x:Name="ControlsTitleText" Text="Keyboard Bindings" FontSize="20" FontWeight="Bold" Margin="0,0,0,10" />
+                            <TextBlock x:Name="ControlsHintText" Text="Click a field and press a key to bind it. Use combinations like Shift+Up for D-pad." FontSize="11" Opacity="0.6" Margin="0,0,0,15" />
+
+                            <GroupBox x:Name="GroupActions" Header="Actions">
+                                <Grid Margin="10">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Label x:Name="LabelA" Grid.Row="0" Content="A (Interact):" />
+                                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="KeyA" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelB" Grid.Row="1" Content="B (Cancel):" />
+                                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="KeyB" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelX" Grid.Row="2" Content="X (Attack):" />
+                                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="KeyX" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelY" Grid.Row="3" Content="Y (Magic):" />
+                                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="KeyY" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelBack" Grid.Row="4" Content="Back:" />
+                                    <TextBox Grid.Row="4" Grid.Column="1" x:Name="KeyBack" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelStart" Grid.Row="5" Content="Start:" />
+                                    <TextBox Grid.Row="5" Grid.Column="1" x:Name="KeyStart" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                </Grid>
+                            </GroupBox>
+
+                            <GroupBox x:Name="GroupShoulders" Header="Shoulders / Triggers">
+                                <Grid Margin="10">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Label x:Name="LabelLeftShoulder" Grid.Row="0" Content="Left Shoulder:" />
+                                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="KeyLS" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelRightShoulder" Grid.Row="1" Content="Right Shoulder:" />
+                                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="KeyRS" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelLeftTrigger" Grid.Row="2" Content="Left Trigger:" />
+                                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="KeyLT" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelRightTrigger" Grid.Row="3" Content="Right Trigger:" />
+                                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="KeyRT" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                </Grid>
+                            </GroupBox>
+
+                            <GroupBox x:Name="GroupLeftStick" Header="Left Stick (Movement)">
+                                <Grid Margin="10">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Label x:Name="LabelLUp" Grid.Row="0" Content="Up:" />
+                                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="KeyLUp" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelLDown" Grid.Row="1" Content="Down:" />
+                                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="KeyLDown" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelLLeft" Grid.Row="2" Content="Left:" />
+                                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="KeyLLeft" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelLRight" Grid.Row="3" Content="Right:" />
+                                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="KeyLRight" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelLPress" Grid.Row="4" Content="Press (Sprint):" />
+                                    <TextBox Grid.Row="4" Grid.Column="1" x:Name="KeyLPress" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                </Grid>
+                            </GroupBox>
+
+                            <GroupBox x:Name="GroupRightStick" Header="Right Stick (Camera)">
+                                <Grid Margin="10">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Label x:Name="LabelRUp" Grid.Row="0" Content="Up:" />
+                                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="KeyRUp" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelRDown" Grid.Row="1" Content="Down:" />
+                                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="KeyRDown" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelRLeft" Grid.Row="2" Content="Left:" />
+                                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="KeyRLeft" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelRRight" Grid.Row="3" Content="Right:" />
+                                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="KeyRRight" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelRPress" Grid.Row="4" Content="Press:" />
+                                    <TextBox Grid.Row="4" Grid.Column="1" x:Name="KeyRPress" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                </Grid>
+                            </GroupBox>
+
+                            <GroupBox x:Name="GroupDpad" Header="D-Pad">
+                                <Grid Margin="10">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Label x:Name="LabelDUp" Grid.Row="0" Content="Up:" />
+                                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="KeyDUp" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelDDown" Grid.Row="1" Content="Down:" />
+                                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="KeyDDown" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelDLeft" Grid.Row="2" Content="Left:" />
+                                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="KeyDLeft" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                    <Label x:Name="LabelDRight" Grid.Row="3" Content="Right:" />
+                                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="KeyDRight" Margin="0,2" PreviewKeyDown="KeyField_PreviewKeyDown" />
+                                </Grid>
+                            </GroupBox>
+
+                            <TextBlock x:Name="BindingsAppliedNoteText" Text="Bindings are applied when you click PLAY." FontSize="11" Opacity="0.6" Margin="0,5,0,10" />
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
+                                <Button x:Name="ResetKeybindsButton" Content="Reset to Default" Width="150" Click="ResetKeybinds_Click" Margin="0,0,10,0" />
+                                <Button x:Name="SaveKeybindsButton" Content="Save Bindings" Width="120" Click="SaveKeybinds_Click" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem x:Name="TabSettings" Header="SETTINGS">
                     <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0">
                         <StackPanel Margin="10">
 
-                            <GroupBox Header="Graphics Quality">
+                            <GroupBox x:Name="GroupGraphics" Header="Graphics Quality">
                                 <Grid Margin="10">
                                     <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
@@ -61,26 +230,35 @@
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
 
-                                    <Label Grid.Row="0" Grid.Column="0" Content="Display:" />
+                                    <Label x:Name="LabelDisplay" Grid.Row="0" Grid.Column="0" Content="Display:" />
                                     <TextBlock x:Name="DetectedDisplayText" Grid.Row="0" Grid.Column="1" Margin="2,6" TextWrapping="Wrap" Opacity="0.85" />
 
-                                    <Label Grid.Row="1" Grid.Column="0" Content="Resolution:" />
+                                    <Label x:Name="LabelResolution" Grid.Row="1" Grid.Column="0" Content="Resolution:" />
                                     <ComboBox x:Name="ResolutionCombo" Grid.Row="1" Grid.Column="1" Margin="0,2" ToolTip="Internal render resolution. Values shown are display-equivalent; the game renders at 16:9 pixels and is stretched to your monitor's aspect ratio." />
 
-                                    <Label Grid.Row="2" Grid.Column="0" Content="Renderer:" />
+                                    <Label x:Name="LabelRenderer" Grid.Row="2" Grid.Column="0" Content="Renderer:" />
                                     <ComboBox x:Name="RendererCombo" Grid.Row="2" Grid.Column="1" Margin="0,2" ToolTip="ReXGlue = original D3D12 presenter. Native = experimental DiligentCore/Vulkan presenter with GPU interop." />
 
-                                    <Label Grid.Row="3" Grid.Column="0" Content="Anti-Aliasing:" />
+                                    <Label x:Name="LabelAntiAliasing" Grid.Row="3" Grid.Column="0" Content="Anti-Aliasing:" />
                                     <ComboBox x:Name="AAModeCombo" Grid.Row="3" Grid.Column="1" Margin="0,2" />
 
-                                    <Label Grid.Row="4" Grid.Column="0" Content="Texture Filtering:" />
+                                    <Label x:Name="LabelTextureFiltering" Grid.Row="4" Grid.Column="0" Content="Texture Filtering:" />
                                     <ComboBox x:Name="AnisoCombo" Grid.Row="4" Grid.Column="1" Margin="0,2" />
 
-                                    <CheckBox x:Name="FullscreenCheck" Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2" Content="Fullscreen" Margin="0,8,0,0" />
+                                    <Label x:Name="LabelGameLanguage" Grid.Row="5" Grid.Column="0" Content="Game Language:" />
+                                    <ComboBox x:Name="LanguageCombo" Grid.Row="5" Grid.Column="1" Margin="0,2"
+                                              ToolTip="Game language. Detected from the XEX game region. English is always available." />
+
+                                    <Label x:Name="LabelLauncherLanguage" Grid.Row="6" Grid.Column="0" Content="Launcher Language:" />
+                                    <ComboBox x:Name="LauncherLanguageCombo" Grid.Row="6" Grid.Column="1" Margin="0,2"
+                                              ToolTip="Language for the launcher interface."
+                                              SelectionChanged="LauncherLanguageCombo_SelectionChanged" />
+
+                                    <CheckBox x:Name="FullscreenCheck" Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="2" Content="Fullscreen" Margin="0,8,0,0" />
                                 </Grid>
                             </GroupBox>
 
-                            <GroupBox Header="Controls">
+                            <GroupBox x:Name="GroupControlsSettings" Header="Controls">
                                 <StackPanel Margin="10">
                                     <CheckBox x:Name="ControllerFixCheck" Content="Use SDL controller backend (Xbox / PlayStation controllers)" Margin="0,3" ToolTip="Checked = SDL3 (all controller families). Unchecked = XInput (Xbox pads only)." />
 
@@ -90,30 +268,30 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="Button glyphs:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock x:Name="LabelButtonGlyphs" Grid.Column="0" Text="Button glyphs:" VerticalAlignment="Center" Margin="0,0,8,0" />
                                         <ComboBox x:Name="GlyphFamilyCombo" Grid.Column="1" SelectedIndex="0" IsEnabled="False" ToolTip="Coming soon">
                                             <ComboBoxItem Content="Xbox 360" />
                                             <ComboBoxItem Content="PlayStation" />
                                         </ComboBox>
-                                        <TextBlock Grid.Column="2" Text="Coming soon" FontSize="11" FontStyle="Italic" Opacity="0.5" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                        <TextBlock x:Name="ComingSoonText" Grid.Column="2" Text="Coming soon" FontSize="11" FontStyle="Italic" Opacity="0.5" VerticalAlignment="Center" Margin="8,0,0,0" />
                                     </Grid>
 
                                     <CheckBox x:Name="LoggingEnabledCheck" Content="Enable logging (for crash reports)" IsChecked="False" Margin="0,3" />
                                 </StackPanel>
                             </GroupBox>
 
-                            <TextBlock Text="Settings are applied when you click PLAY." FontSize="11" Opacity="0.6" Margin="0,5,0,10" />
+                            <TextBlock x:Name="SettingsAppliedNoteText" Text="Settings are applied when you click PLAY." FontSize="11" Opacity="0.6" Margin="0,5,0,10" />
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
-                                <Button Content="Reset to Recommended" Width="180" Click="ApplyRecommended_Click" Margin="0,0,10,0" />
-                                <Button Content="Save Settings" Width="120" Click="SaveSettings_Click" />
+                                <Button x:Name="ApplyRecommendedButton" Content="Reset to Recommended" Width="180" Click="ApplyRecommended_Click" Margin="0,0,10,0" />
+                                <Button x:Name="SaveSettingsButton" Content="Save Settings" Width="120" Click="SaveSettings_Click" />
                             </StackPanel>
 
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
 
-                <TabItem Header="UPDATES">
+                <TabItem x:Name="TabUpdates" Header="UPDATES">
                     <Grid Margin="10">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
@@ -122,8 +300,8 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <TextBlock Text="Check for Updates" FontSize="20" FontWeight="Bold" Margin="0,0,0,10" />
-                        <TextBlock x:Name="UpdateVersionText" Grid.Row="1" Text="Installed version: 0.3.2-alpha" Margin="0,5" />
+                        <TextBlock x:Name="UpdatesTitleText" Text="Check for Updates" FontSize="20" FontWeight="Bold" Margin="0,0,0,10" />
+                        <TextBlock x:Name="UpdateVersionText" Grid.Row="1" Text="Installed version: 0.6.0-beta" Margin="0,5" />
                         <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10">
                             <Button x:Name="CheckUpdatesButton" Content="Check for Updates" Width="150" Margin="0,0,10,0" Click="CheckUpdates_Click" />
                             <Button x:Name="DownloadUpdateButton" Content="Download &amp; Install" Width="150" Visibility="Collapsed" Click="DownloadUpdate_Click" />

@@ -44,8 +44,10 @@
     <Compile Include="DisplayOptions.cs" />
     <Compile Include="GameConfig.cs" />
     <Compile Include="GitHubUpdater.cs" />
+    <Compile Include="LauncherLocalizer.cs" />
     <Compile Include="PathHelper.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="XexParser.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

@@ -298,7 +298,22 @@ namespace DantesInferno.Installer
                 config.Fullscreen = true;
                 if (string.IsNullOrEmpty(config.InputBackend))
                     config.InputBackend = "sdl";
+                config["dlc_source_path"] = Path.Combine(_destination, "dlc");
                 config.Save();
+
+                Directory.CreateDirectory(Path.Combine(_destination, "dlc"));
+
+                string tuSrc = GetPayloadFile("default.xexp");
+                if (File.Exists(tuSrc))
+                {
+                    string tuDst = Path.Combine(gameDir, "default.xexp");
+                    _worker.ReportProgress(91, "Copying Title Update 2 patch (default.xexp)...");
+                    File.Copy(tuSrc, tuDst, true);
+                }
+                else
+                {
+                    _worker.ReportProgress(91, "WARNING: default.xexp not found in payload - TU2 will not be applied.");
+                }
 
                 string versionFile = GetPayloadFile("version.txt");
                 string versionStr = "0.0.0";

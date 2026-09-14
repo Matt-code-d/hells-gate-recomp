@@ -1,3 +1,57 @@
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+@@ -15,1 +15,3 @@
++#include <atomic>
++#include <rex/cvar.h>
+ #include <rex/filesystem/device.h>
+@@ -216,6 +218,46 @@
+       result = file->Read(buffer.guest_address(), buffer_length,
+                           byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
+                           &bytes_read, apc_context.guest_address());
++      if (file->entry() && rex::cvar::Query<bool>("dlc_trace")) {
++        std::string name = file->name();
++        for (char& c : name) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
++        if (name.ends_with(".dlm") || name.ends_with(".lu2")) {
++          static std::atomic<uint32_t> traced_reads{0};
++          uint32_t id = traced_reads.fetch_add(1, std::memory_order_relaxed) + 1;
++          auto* ts = rex::runtime::ThreadState::Get();
++          if (id <= 32 && ts) {
++            const auto* ctx = ts->context();
++            REXFS_INFO("DLC-IO-TRACE: id={} file={} handle={:08X} buffer={:08X} "
++                       "requested={} bytes={} status={:08X} sp={:08X} lr={:08X}",
++                       id, file->path(), uint32_t(file_handle), buffer.guest_address(),
++                       uint32_t(buffer_length), bytes_read, result, ctx->r1.u32,
++                       uint32_t(ctx->lr));
++            auto* memory = REX_KERNEL_MEMORY();
++            auto read_word = [memory](uint32_t address, uint32_t& value) {
++              if ((address & 3) || address > UINT32_MAX - 4) return false;
++              auto* heap = memory->LookupHeap(address);
++              rex::memory::HeapAllocationInfo info{};
++              if (!heap || !heap->QueryRegionInfo(address, &info) ||
++                  !(info.state & rex::memory::kMemoryAllocationCommit) ||
++                  !(info.protect & rex::memory::kMemoryProtectRead) ||
++                  uint64_t(address) + 4 > uint64_t(info.base_address) + info.region_size)
++                return false;
++              value = rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
++              return true;
++            };
++            uint32_t frame = ctx->r1.u32;
++            for (uint32_t depth = 0; depth < 16; ++depth) {
++              uint32_t parent = 0, saved_lr = 0;
++              if (!read_word(frame, parent) || parent <= frame || (parent & 15) ||
++                  uint64_t(parent) - ctx->r1.u32 > 0x100000 ||
++                  !read_word(parent - 8, saved_lr)) break;
++              REXFS_INFO("DLC-IO-TRACE: id={} frame={} sp={:08X} parent={:08X} saved_lr={:08X}",
++                         id, depth, frame, parent, saved_lr);
++              frame = parent;
++            }
++          }
++        }
++      }
+       if (io_status_block) {
+         io_status_block->status = result;
+         io_status_block->information = bytes_read;
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
 index 96d362b..f83f172 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
@@ -3422,6 +3476,39 @@ index 7360ed9..383b1ba 100644
    uint32_t last_acquired_and_ready =
        guest_output_mailbox_acquired_and_ready_.load(std::memory_order_relaxed);
    // Desired acquired = current acquired (changed only by the consumers).
+diff --git a/src/filesystem/entry.cpp b/src/filesystem/entry.cpp
+--- a/src/filesystem/entry.cpp
++++ b/src/filesystem/entry.cpp
+@@ -12,6 +12,7 @@
+ 
+ #include <algorithm>
++#include <string>
+ 
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/device.h>
+@@ -84,15 +85,22 @@ Entry* Entry::ResolvePath(const std::string_view path) {
+ Entry* Entry::IterateChildren(const rex::filesystem::WildcardEngine& engine,
+                               size_t* current_index) {
+   auto global_lock = global_critical_region_.Acquire();
++  bool is_content_device =
++      device_->mount_path().find("\\Device\\Content") != std::string::npos;
+   while (*current_index < children_.size()) {
+     auto& child = children_[*current_index];
+     *current_index = *current_index + 1;
+-    if (engine.Match(child->name())) {
+-      if (device_->mount_path().find("\\Device\\Content") != std::string::npos) {
++    if (engine.Match(child->name())) {
++      if (is_content_device) {
+         REXFS_INFO("[DLC-ENUM] {} '{}' -> '{}'", device_->mount_path(), path_, child->name());
+       }
+       return child.get();
+     }
+   }
+-  if (device_->mount_path().find("\\Device\\Content") != std::string::npos) {
++  if (is_content_device) {
+     REXFS_INFO("[DLC-ENUM] {} '{}' -> <end>", device_->mount_path(), path_);
+   }
+   return nullptr;
 diff --git a/thirdparty/libmspack b/thirdparty/libmspack
 --- a/thirdparty/libmspack
 +++ b/thirdparty/libmspack

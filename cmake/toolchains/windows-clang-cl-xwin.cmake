@@ -1,27 +1,4 @@
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR AMD64)
 
@@ -47,27 +24,10 @@ set(CMAKE_CXX_COMPILER_TARGET x86_64-pc-windows-msvc)
 set(CMAKE_LINKER lld-link)
 set(CMAKE_AR llvm-lib)
 
-
 find_program(CMAKE_RC_COMPILER
     NAMES llvm-rc llvm-rc-22 llvm-rc-18
     HINTS "$ENV{HOME}/.local/opt/llvm-mingw/bin" /usr/lib64/llvm22/bin /usr/bin
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 set(_xwin_libpath_flags
     "-libpath:\"${XWIN_SDK_PATH}/crt/lib/x86_64\" -libpath:\"${XWIN_SDK_PATH}/sdk/lib/um/x86_64\" -libpath:\"${XWIN_SDK_PATH}/sdk/lib/ucrt/x86_64\""
@@ -89,27 +49,11 @@ foreach(_inc ${_xwin_includes})
     string(APPEND _xwin_flags " -imsvc \"${_inc}\"")
 endforeach()
 
-
-
 set(CMAKE_C_FLAGS_INIT "-march=x86-64-v2${_xwin_flags}")
-
-
-
-
 
 set(CMAKE_CXX_FLAGS_INIT "-march=x86-64-v2 /Zc:char8_t-${_xwin_flags}")
 
-
-
-
-
-
 set(ENV{LIB} "${XWIN_SDK_PATH}/crt/lib/x86_64;${XWIN_SDK_PATH}/sdk/lib/um/x86_64;${XWIN_SDK_PATH}/sdk/lib/ucrt/x86_64")
-
-
-
-
-
 
 set(CMAKE_FIND_ROOT_PATH "${XWIN_SDK_PATH}")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)

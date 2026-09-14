@@ -17,6 +17,8 @@ namespace DantesInferno.Launcher
         private bool _gameRunning;
         private DisplayAspect _displayAspect;
         private List<DisplayModeOption> _resolutionOptions;
+        private string _launcherLanguage = LauncherLocalizer.DefaultLanguage;
+        private bool _populatingLauncherLanguage;
 
         public MainWindow()
         {
@@ -24,7 +26,9 @@ namespace DantesInferno.Launcher
             InitializeTheme();
             LoadConfiguration();
             PopulateControls();
+            ApplyLocalization();
             RefreshPlayStatus();
+            RefreshDlcStatus();
             CheckForUpdatesOnStartup();
         }
 
@@ -156,6 +160,332 @@ namespace DantesInferno.Launcher
             GlyphFamilyCombo.SelectedIndex = _config.GlyphFamily.Equals("playstation", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
 
             LoggingEnabledCheck.IsChecked = !_config.LogLevel.Equals("off", StringComparison.OrdinalIgnoreCase);
+
+            PopulateLanguageCombo();
+            PopulateLauncherLanguageCombo();
+            PopulateKeybinds();
+        }
+
+        private void PopulateLauncherLanguageCombo()
+        {
+            _populatingLauncherLanguage = true;
+            var items = new List<KeyValuePair<string, string>>();
+            foreach (var lang in LauncherLocalizer.SupportedLanguages)
+            {
+                string display = LauncherLocalizer.LanguageDisplayNames.ContainsKey(lang)
+                    ? LauncherLocalizer.LanguageDisplayNames[lang] : lang;
+                items.Add(new KeyValuePair<string, string>(lang, display));
+            }
+            LauncherLanguageCombo.ItemsSource = items;
+            LauncherLanguageCombo.DisplayMemberPath = "Value";
+            LauncherLanguageCombo.SelectedValuePath = "Key";
+
+            _launcherLanguage = LauncherLocalizer.NormalizeLanguage(_config.LauncherLanguage);
+            int idx = items.FindIndex(i => i.Key == _launcherLanguage);
+            if (idx < 0) idx = 0;
+            LauncherLanguageCombo.SelectedIndex = idx;
+            _populatingLauncherLanguage = false;
+        }
+
+        private void LauncherLanguageCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        {
+            if (_populatingLauncherLanguage)
+                return;
+            if (LauncherLanguageCombo.SelectedValue is string lang)
+            {
+                _launcherLanguage = LauncherLocalizer.NormalizeLanguage(lang);
+                _config.LauncherLanguage = _launcherLanguage;
+                _config.Save();
+                ApplyLocalization();
+            }
+        }
+
+        private void ApplyLocalization()
+        {
+            string Lt(string key) => LauncherLocalizer.Get(_launcherLanguage, key);
+            string Lf(string key, params object[] args) => LauncherLocalizer.Get(_launcherLanguage, key, args);
+
+            TabPlay.Header = Lt(LauncherLocalizer.TabPlay);
+            TabDlc.Header = Lt(LauncherLocalizer.TabDlc);
+            TabControls.Header = Lt(LauncherLocalizer.TabControls);
+            TabSettings.Header = Lt(LauncherLocalizer.TabSettings);
+            TabUpdates.Header = Lt(LauncherLocalizer.TabUpdates);
+
+            PlaySubtitleText.Text = Lt(LauncherLocalizer.PlaySubtitle);
+            PlayButton.Content = Lt(LauncherLocalizer.PlayButton);
+            ExitButton.Content = Lt(LauncherLocalizer.ExitButton);
+            SupportButton.Content = Lt(LauncherLocalizer.SupportDeveloper);
+            var version = GitHubUpdater.GetLocalVersion(_installDir);
+            VersionText.Text = Lf(LauncherLocalizer.VersionLabel, version.ToString());
+
+            DlcTitleText.Text = Lt(LauncherLocalizer.DlcTitle);
+            DlcDescriptionText.Text = Lt(LauncherLocalizer.DlcDescription);
+            OpenDlcFolderButton.Content = Lt(LauncherLocalizer.OpenDlcFolder);
+            OpenTuFolderButton.Content = Lt(LauncherLocalizer.OpenTuFolder);
+            OpenTuFolderButton.ToolTip = Lt(LauncherLocalizer.TuFolderTooltip);
+
+            TrialsServerTitleText.Text = Lt(LauncherLocalizer.TrialsServerTitle);
+            TrialsServerMessageText.Text = Lt(LauncherLocalizer.TrialsServerMessage);
+            TrialsServerButton.Content = Lt(LauncherLocalizer.TrialsServerButton);
+
+            ControlsTitleText.Text = Lt(LauncherLocalizer.ControlsTitle);
+            ControlsHintText.Text = Lt(LauncherLocalizer.ControlsHint);
+            GroupActions.Header = Lt(LauncherLocalizer.GroupActions);
+            GroupShoulders.Header = Lt(LauncherLocalizer.GroupShoulders);
+            GroupLeftStick.Header = Lt(LauncherLocalizer.GroupLeftStick);
+            GroupRightStick.Header = Lt(LauncherLocalizer.GroupRightStick);
+            GroupDpad.Header = Lt(LauncherLocalizer.GroupDpad);
+            LabelA.Content = Lt(LauncherLocalizer.LabelA);
+            LabelB.Content = Lt(LauncherLocalizer.LabelB);
+            LabelX.Content = Lt(LauncherLocalizer.LabelX);
+            LabelY.Content = Lt(LauncherLocalizer.LabelY);
+            LabelBack.Content = Lt(LauncherLocalizer.LabelBack);
+            LabelStart.Content = Lt(LauncherLocalizer.LabelStart);
+            LabelLeftShoulder.Content = Lt(LauncherLocalizer.LabelLeftShoulder);
+            LabelRightShoulder.Content = Lt(LauncherLocalizer.LabelRightShoulder);
+            LabelLeftTrigger.Content = Lt(LauncherLocalizer.LabelLeftTrigger);
+            LabelRightTrigger.Content = Lt(LauncherLocalizer.LabelRightTrigger);
+            LabelLUp.Content = Lt(LauncherLocalizer.LabelUp);
+            LabelLDown.Content = Lt(LauncherLocalizer.LabelDown);
+            LabelLLeft.Content = Lt(LauncherLocalizer.LabelLeft);
+            LabelLRight.Content = Lt(LauncherLocalizer.LabelRight);
+            LabelLPress.Content = Lt(LauncherLocalizer.LabelPressSprint);
+            LabelRUp.Content = Lt(LauncherLocalizer.LabelUp);
+            LabelRDown.Content = Lt(LauncherLocalizer.LabelDown);
+            LabelRLeft.Content = Lt(LauncherLocalizer.LabelLeft);
+            LabelRRight.Content = Lt(LauncherLocalizer.LabelRight);
+            LabelRPress.Content = Lt(LauncherLocalizer.LabelPress);
+            LabelDUp.Content = Lt(LauncherLocalizer.LabelUp);
+            LabelDDown.Content = Lt(LauncherLocalizer.LabelDown);
+            LabelDLeft.Content = Lt(LauncherLocalizer.LabelLeft);
+            LabelDRight.Content = Lt(LauncherLocalizer.LabelRight);
+            BindingsAppliedNoteText.Text = Lt(LauncherLocalizer.BindingsAppliedNote);
+            ResetKeybindsButton.Content = Lt(LauncherLocalizer.ResetToDefault);
+            SaveKeybindsButton.Content = Lt(LauncherLocalizer.SaveBindings);
+
+            GroupGraphics.Header = Lt(LauncherLocalizer.GroupGraphics);
+            LabelDisplay.Content = Lt(LauncherLocalizer.LabelDisplay);
+            LabelResolution.Content = Lt(LauncherLocalizer.LabelResolution);
+            LabelRenderer.Content = Lt(LauncherLocalizer.LabelRenderer);
+            LabelAntiAliasing.Content = Lt(LauncherLocalizer.LabelAntiAliasing);
+            LabelTextureFiltering.Content = Lt(LauncherLocalizer.LabelTextureFiltering);
+            LabelGameLanguage.Content = Lt(LauncherLocalizer.LabelGameLanguage);
+            LabelLauncherLanguage.Content = Lt(LauncherLocalizer.LabelLauncherLanguage);
+            FullscreenCheck.Content = Lt(LauncherLocalizer.CheckFullscreen);
+            GroupControlsSettings.Header = Lt(LauncherLocalizer.GroupControls);
+            ControllerFixCheck.Content = Lt(LauncherLocalizer.CheckControllerBackend);
+            ControllerFixCheck.ToolTip = Lt(LauncherLocalizer.ControllerTooltip);
+            LabelButtonGlyphs.Text = Lt(LauncherLocalizer.LabelButtonGlyphs);
+            ComingSoonText.Text = Lt(LauncherLocalizer.ComingSoon);
+            LoggingEnabledCheck.Content = Lt(LauncherLocalizer.CheckLogging);
+            SettingsAppliedNoteText.Text = Lt(LauncherLocalizer.SettingsAppliedNote);
+            ApplyRecommendedButton.Content = Lt(LauncherLocalizer.ResetToRecommended);
+            SaveSettingsButton.Content = Lt(LauncherLocalizer.SaveSettings);
+            ResolutionCombo.ToolTip = Lt(LauncherLocalizer.ResolutionTooltip);
+            RendererCombo.ToolTip = Lt(LauncherLocalizer.RendererTooltip);
+            LanguageCombo.ToolTip = Lt(LauncherLocalizer.LanguageGameTooltip);
+            LauncherLanguageCombo.ToolTip = Lt(LauncherLocalizer.LanguageLauncherTooltip);
+
+            UpdatesTitleText.Text = Lt(LauncherLocalizer.UpdatesTitle);
+            UpdateVersionText.Text = Lf(LauncherLocalizer.InstalledVersion, version.ToString());
+            CheckUpdatesButton.Content = Lt(LauncherLocalizer.CheckForUpdates);
+            DownloadUpdateButton.Content = Lt(LauncherLocalizer.DownloadInstall);
+
+            RefreshPlayStatus();
+            RefreshDlcStatus();
+        }
+
+        private void PopulateLanguageCombo()
+        {
+            
+            var languageItems = new List<KeyValuePair<uint, string>>();
+            string xexPath = Path.Combine(_config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir), "default.xex");
+
+            if (File.Exists(xexPath))
+            {
+                var xexInfo = XexParser.Parse(xexPath);
+                if (xexInfo != null)
+                {
+                    var supported = XexParser.GetSupportedLanguages(xexInfo.Region);
+                    foreach (uint langId in supported)
+                    {
+                        if (XexParser.LanguageNames.TryGetValue(langId, out string name))
+                            languageItems.Add(new KeyValuePair<uint, string>(langId, name));
+                    }
+                }
+            }
+
+            if (languageItems.Count == 0)
+                languageItems.Add(new KeyValuePair<uint, string>(1, "English"));
+
+            LanguageCombo.ItemsSource = languageItems;
+            LanguageCombo.DisplayMemberPath = "Value";
+            LanguageCombo.SelectedValuePath = "Key";
+
+            uint current = _config.UserLanguage;
+            int idx = languageItems.FindIndex(l => l.Key == current);
+            if (idx < 0) idx = 0;
+            LanguageCombo.SelectedIndex = idx;
+        }
+
+        private void PopulateKeybinds()
+        {
+            KeyA.Text = _config.KeybindA;
+            KeyB.Text = _config.KeybindB;
+            KeyX.Text = _config.KeybindX;
+            KeyY.Text = _config.KeybindY;
+            KeyBack.Text = _config.KeybindBack;
+            KeyStart.Text = _config.KeybindStart;
+            KeyLS.Text = _config.KeybindLeftShoulder;
+            KeyRS.Text = _config.KeybindRightShoulder;
+            KeyLT.Text = _config.KeybindLeftTrigger;
+            KeyRT.Text = _config.KeybindRightTrigger;
+            KeyLUp.Text = _config.KeybindLStickUp;
+            KeyLDown.Text = _config.KeybindLStickDown;
+            KeyLLeft.Text = _config.KeybindLStickLeft;
+            KeyLRight.Text = _config.KeybindLStickRight;
+            KeyLPress.Text = _config.KeybindLStickPress;
+            KeyRUp.Text = _config.KeybindRStickUp;
+            KeyRDown.Text = _config.KeybindRStickDown;
+            KeyRLeft.Text = _config.KeybindRStickLeft;
+            KeyRRight.Text = _config.KeybindRStickRight;
+            KeyRPress.Text = _config.KeybindRStickPress;
+            KeyDUp.Text = _config.KeybindDpadUp;
+            KeyDDown.Text = _config.KeybindDpadDown;
+            KeyDLeft.Text = _config.KeybindDpadLeft;
+            KeyDRight.Text = _config.KeybindDpadRight;
+        }
+
+        private void SaveKeybindsToConfig()
+        {
+            _config.KeybindA = KeyA.Text;
+            _config.KeybindB = KeyB.Text;
+            _config.KeybindX = KeyX.Text;
+            _config.KeybindY = KeyY.Text;
+            _config.KeybindBack = KeyBack.Text;
+            _config.KeybindStart = KeyStart.Text;
+            _config.KeybindLeftShoulder = KeyLS.Text;
+            _config.KeybindRightShoulder = KeyRS.Text;
+            _config.KeybindLeftTrigger = KeyLT.Text;
+            _config.KeybindRightTrigger = KeyRT.Text;
+            _config.KeybindLStickUp = KeyLUp.Text;
+            _config.KeybindLStickDown = KeyLDown.Text;
+            _config.KeybindLStickLeft = KeyLLeft.Text;
+            _config.KeybindLStickRight = KeyLRight.Text;
+            _config.KeybindLStickPress = KeyLPress.Text;
+            _config.KeybindRStickUp = KeyRUp.Text;
+            _config.KeybindRStickDown = KeyRDown.Text;
+            _config.KeybindRStickLeft = KeyRLeft.Text;
+            _config.KeybindRStickRight = KeyRRight.Text;
+            _config.KeybindRStickPress = KeyRPress.Text;
+            _config.KeybindDpadUp = KeyDUp.Text;
+            _config.KeybindDpadDown = KeyDDown.Text;
+            _config.KeybindDpadLeft = KeyDLeft.Text;
+            _config.KeybindDpadRight = KeyDRight.Text;
+        }
+
+        private void KeyField_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            e.Handled = true;
+            var box = sender as System.Windows.Controls.TextBox;
+            if (box == null) return;
+
+            var key = e.Key;
+            if (key == System.Windows.Input.Key.LeftShift || key == System.Windows.Input.Key.RightShift ||
+                key == System.Windows.Input.Key.LeftCtrl || key == System.Windows.Input.Key.RightCtrl ||
+                key == System.Windows.Input.Key.LeftAlt || key == System.Windows.Input.Key.RightAlt ||
+                key == System.Windows.Input.Key.LWin || key == System.Windows.Input.Key.RWin)
+            {
+                
+                string mod = null;
+                if (key == System.Windows.Input.Key.LeftShift || key == System.Windows.Input.Key.RightShift) mod = "Shift";
+                else if (key == System.Windows.Input.Key.LeftCtrl || key == System.Windows.Input.Key.RightCtrl) mod = "Ctrl";
+                else if (key == System.Windows.Input.Key.LeftAlt || key == System.Windows.Input.Key.RightAlt) mod = "Alt";
+                if (mod != null)
+                {
+                    string current = box.Text;
+                    if (current.StartsWith(mod + "+")) return; 
+                    box.Text = string.IsNullOrEmpty(current) ? mod + "+" : mod + "+" + current;
+                }
+                return;
+            }
+
+            string keyName;
+            if (key == System.Windows.Input.Key.Space) keyName = "Space";
+            else if (key == System.Windows.Input.Key.Up) keyName = "Up";
+            else if (key == System.Windows.Input.Key.Down) keyName = "Down";
+            else if (key == System.Windows.Input.Key.Left) keyName = "Left";
+            else if (key == System.Windows.Input.Key.Right) keyName = "Right";
+            else if (key == System.Windows.Input.Key.Escape) keyName = "Escape";
+            else if (key == System.Windows.Input.Key.Tab) keyName = "Tab";
+            else if (key == System.Windows.Input.Key.Enter) keyName = "Enter";
+            else if (key == System.Windows.Input.Key.Back) keyName = "Backspace";
+            else if (key == System.Windows.Input.Key.Delete) keyName = "Delete";
+            else if (key == System.Windows.Input.Key.Home) keyName = "Home";
+            else if (key == System.Windows.Input.Key.End) keyName = "End";
+            else if (key == System.Windows.Input.Key.PageUp) keyName = "PageUp";
+            else if (key == System.Windows.Input.Key.PageDown) keyName = "PageDown";
+            else if (key == System.Windows.Input.Key.LeftShift || key == System.Windows.Input.Key.RightShift) keyName = "Shift";
+            else if (key == System.Windows.Input.Key.LeftCtrl || key == System.Windows.Input.Key.RightCtrl) keyName = "Ctrl";
+            else keyName = key.ToString();
+
+            var mods = new List<string>();
+            if (System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift))
+                mods.Add("Shift");
+            if (System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control))
+                mods.Add("Ctrl");
+            if (System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Alt))
+                mods.Add("Alt");
+
+            if (keyName == "Shift" || keyName == "Ctrl" || keyName == "Alt")
+            {
+                box.Text = keyName;
+                return;
+            }
+
+            if (mods.Count > 0)
+                box.Text = string.Join("+", mods) + "+" + keyName;
+            else
+                box.Text = keyName;
+        }
+
+        private void ResetKeybinds_Click(object sender, RoutedEventArgs e)
+        {
+            _config.KeybindA = "Space";
+            _config.KeybindB = "F";
+            _config.KeybindX = "MouseLeft";
+            _config.KeybindY = "E";
+            _config.KeybindLeftShoulder = "Q";
+            _config.KeybindRightShoulder = "MouseRight";
+            _config.KeybindLeftTrigger = "Shift";
+            _config.KeybindRightTrigger = "Ctrl";
+            _config.KeybindLStickUp = "W";
+            _config.KeybindLStickDown = "S";
+            _config.KeybindLStickLeft = "A";
+            _config.KeybindLStickRight = "D";
+            _config.KeybindLStickPress = "X";
+            _config.KeybindRStickUp = "Up";
+            _config.KeybindRStickDown = "Down";
+            _config.KeybindRStickLeft = "Left";
+            _config.KeybindRStickRight = "Right";
+            _config.KeybindRStickPress = "R";
+            _config.KeybindDpadUp = "Shift+Up";
+            _config.KeybindDpadDown = "Shift+Down";
+            _config.KeybindDpadLeft = "Shift+Left";
+            _config.KeybindDpadRight = "Shift+Right";
+            _config.KeybindBack = "Tab";
+            _config.KeybindStart = "Escape";
+            PopulateKeybinds();
+            MessageBox.Show("Default bindings restored. Click Save Bindings to keep them.", "Reset",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        private void SaveKeybinds_Click(object sender, RoutedEventArgs e)
+        {
+            SaveKeybindsToConfig();
+            _config.Save();
+            MessageBox.Show("Keyboard bindings saved. They will be applied when you click PLAY.", "Saved",
+                MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private void RefreshPlayStatus()
@@ -163,9 +493,9 @@ namespace DantesInferno.Launcher
             string exePath = PathHelper.GetGameExecutablePath(_installDir);
             string gameData = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
             if (File.Exists(exePath) && Directory.Exists(gameData))
-                PlayStatusText.Text = "Game files found.";
+                PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusReady);
             else
-                PlayStatusText.Text = "Game files missing. Run the installer first.";
+                PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, "play_status_missing");
         }
 
         private void ClearOldLogs()
@@ -220,6 +550,11 @@ namespace DantesInferno.Launcher
 
             bool loggingEnabled = LoggingEnabledCheck.IsChecked ?? true;
             _config.LogLevel = loggingEnabled ? "info" : "off";
+
+            if (LanguageCombo.SelectedValue is uint langId)
+                _config.UserLanguage = langId;
+
+            _config["dlc_source_path"] = PathHelper.GetDlcPath(_installDir);
         }
 
         private void PlayButton_Click(object sender, RoutedEventArgs e)
@@ -245,6 +580,7 @@ namespace DantesInferno.Launcher
             }
 
             SaveSettingsToConfig();
+            SaveKeybindsToConfig();
             _config.Save();
 
             ClearOldLogs();
@@ -350,10 +686,70 @@ namespace DantesInferno.Launcher
             Close();
         }
 
+        private void OpenDlcFolder_Click(object sender, RoutedEventArgs e)
+        {
+            string dlcPath = PathHelper.GetDlcPath(_installDir);
+            try
+            {
+                if (!Directory.Exists(dlcPath))
+                    Directory.CreateDirectory(dlcPath);
+                Process.Start(new ProcessStartInfo("explorer.exe", "\"" + dlcPath + "\"") { UseShellExecute = true });
+                RefreshDlcStatus();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not open DLC folder:\n" + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void OpenTuFolder_Click(object sender, RoutedEventArgs e)
+        {
+            string gameDir = PathHelper.GetGameDataPath(_installDir);
+            try
+            {
+                if (!Directory.Exists(gameDir))
+                    Directory.CreateDirectory(gameDir);
+                Process.Start(new ProcessStartInfo("explorer.exe", "\"" + gameDir + "\"") { UseShellExecute = true });
+                RefreshDlcStatus();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not open game folder:\n" + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void RefreshDlcStatus()
+        {
+            string dlcPath = PathHelper.GetDlcPath(_installDir);
+            string tuPath = PathHelper.GetTitleUpdatePath(_installDir);
+
+            var parts = new List<string>();
+
+            int dlcCount = 0;
+            if (Directory.Exists(dlcPath))
+            {
+                try
+                {
+                    dlcCount = Directory.GetFiles(dlcPath, "*", SearchOption.AllDirectories)
+                        .Count(f => !Path.GetFileName(f).Equals(".installed", StringComparison.OrdinalIgnoreCase));
+                }
+                catch { }
+            }
+            parts.Add(dlcCount > 0
+                ? LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.DlcFolderFound, dlcCount)
+                : LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.DlcFolderEmpty));
+
+            parts.Add(File.Exists(tuPath)
+                ? LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.TuInstalled)
+                : LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.TuNotFound));
+
+            DlcStatusText.Text = string.Join("\n", parts);
+        }
+
         private void ApplyRecommended_Click(object sender, RoutedEventArgs e)
         {
             _config.ResolutionScale = 2;
-            _config.Renderer = DisplayOptions.RendererReXGlue;
+            _config.Renderer = DisplayOptions.RendererNative;
             _config.SwapPostEffect = "fxaa";
             _config.AnisotropicOverride = -1;
             _config.VSync = true;
@@ -530,6 +926,11 @@ namespace DantesInferno.Launcher
         }
 
         private void SupportButton_Click(object sender, RoutedEventArgs e)
+        {
+            Process.Start(new ProcessStartInfo("https://ko-fi.com/zerkiller") { UseShellExecute = true });
+        }
+
+        private void TrialsServerButton_Click(object sender, RoutedEventArgs e)
         {
             Process.Start(new ProcessStartInfo("https://ko-fi.com/zerkiller") { UseShellExecute = true });
         }

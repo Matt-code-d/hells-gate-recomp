@@ -1,5 +1,4 @@
 
-
 #include "generated/default/dantes_inferno_init.h"
 
 #include "dantes_inferno_app.h"

@@ -82,8 +82,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   dataRoot_ = GameConfig::selectedDataRoot();
   gameRoot_ = GameConfig::selectedGameRoot();
 
-  
-  
   if (!dataRoot_.isEmpty()) {
     const QString testFile =
         QDir(dataRoot_).filePath(QStringLiteral(".__dantes_write_test__"));
@@ -337,7 +335,6 @@ bool MainWindow::setDataRoot(const QString& root) {
   const QString cacheDir = QDir(dataRoot_).filePath(QStringLiteral("cache"));
   const QString logsDir = QDir(dataRoot_).filePath(QStringLiteral("logs"));
 
-  
   if (!QDir().mkpath(configDir) || !QDir().mkpath(savesDir) ||
       !QDir().mkpath(cacheDir) || !QDir().mkpath(logsDir)) {
     QMessageBox::critical(this, tr("Path is not writable"),
@@ -586,8 +583,6 @@ void MainWindow::play() {
     return;
   }
 
-  
-  
   QDir().mkpath(QDir(dataRoot_).filePath(QStringLiteral("logs")));
 
   QProcess process;

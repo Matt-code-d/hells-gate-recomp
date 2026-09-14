@@ -2,7 +2,7 @@ param(
     [string]$Version,
     [string]$GameBuildDir = "..\out\build\win-amd64-release",
     [string]$Configuration = "Release",
-    [string]$OutputDir = "..\alpha-release"
+    [string]$OutputDir = "..\beta-release"
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,6 +55,15 @@ foreach ($f in $gameFiles) {
     if (-not (Test-Path $src)) {
         Write-Error "Missing game binary: $src"
     }
+}
+
+$tuSrc = Join-Path $root "..\game\default.xexp"
+$tuDst = Join-Path $GameBuildDir "default.xexp"
+if (Test-Path $tuSrc) {
+    Copy-Item $tuSrc $tuDst -Force
+    Write-Host "Copied default.xexp (TU2 patch) to build output"
+} else {
+    Write-Warning "default.xexp not found at $tuSrc - TU2 will not be bundled with the installer."
 }
 
 $extractXiso = Join-Path $root "..\tools\extract-xiso\extract-xiso.exe"

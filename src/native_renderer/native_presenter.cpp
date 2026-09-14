@@ -46,7 +46,6 @@ struct NativePresenter::Impl {
   bool gpu_interop_active = false;
   bool gpu_interop_failed = false;
 
-  
   std::atomic<uint64_t> diag_capture_ok{0};
   std::atomic<uint64_t> diag_capture_fail{0};
   std::atomic<uint64_t> diag_empty_image{0};

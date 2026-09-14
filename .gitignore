@@ -33,6 +33,9 @@ thirdparty/diligent-core/
 
 # --- Disc images (copyrighted, do NOT commit) ---
 disc/
+
+# --- Staged DLC packages (user-provided, not committed) ---
+dlc/
 *.iso
 *.xiso
 *.god
