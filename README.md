@@ -39,6 +39,150 @@ Transparency and integrity are important to this project. Artificial Intelligenc
 ### Human Oversight:
 While AI accelerated the auxiliary workflow, all core architectural decisions, advanced problem-solving, code implementation, and final reviews were entirely human-driven. The AI served to eliminate friction, allowing focus on high-level logic and feature development.
 
+## Linux build (Ubuntu)
+
+The project can also be built natively on Linux using Vulkan.
+
+The commands below use **Clang 22** and the same ReXGlue workflow used by the
+Windows build, with the additional Linux GPU plugin and generated-code patch
+step.
+
+### 1. Install the required Linux dependencies
+
+Make manifest backup and make the provided dependency installer executable and run it:
+
+```bash
+cp dantes_inferno_manifest.toml dantes_inferno_manifest.toml.back
+chmod +x ./scripts/install_dantes_min.sh
+./scripts/install_dantes_min.sh
+```
+
+This installs the compiler/toolchain and the development libraries needed by
+ReXGlue on Ubuntu.
+
+### 2. Set up the SDK
+
+Run the existing project setup script with PowerShell:
+
+```bash
+pwsh ./setup.ps1
+```
+
+### 3. Configure Linux and build the ReXGlue CLI
+
+```bash
+cmake -B out/build/linux-release \
+  -G Ninja \
+  -DCMAKE_C_COMPILER=/usr/bin/clang-22 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 \
+  -DCMAKE_CXX_FLAGS="-stdlib=libstdc++ -I$(pwd)/thirdparty/rexglue-sdk/thirdparty/imgui -mssse3 -mavx2" \
+  -DREXSDK_DIR=thirdparty/rexglue-sdk
+
+cmake --build out/build/linux-release --target rexglue
+```
+
+### 4. Build the Xenos GPU plugin
+
+```bash
+cmake --build out/build/linux-release --target rexgpu-xenos
+
+cp thirdparty/rexglue-sdk/out/linux-amd64/lib*.so \
+  ./out/build/linux-release/
+```
+
+### 5. Regenerate the SDK-managed project files
+
+Make sure `game/default.xex` is present before running this command:
+
+```bash
+thirdparty/rexglue-sdk/out/linux-amd64/rexglue init \
+  --force \
+  --project-name dantes_inferno \
+  --project-root . \
+  --xex-path game/default.xex \
+  --game-root game
+```
+
+### 6. Generate the recompiled C++ sources
+
+Reconfigure the project:
+
+```bash
+cmake -B out/build/linux-release \
+  -G Ninja \
+  -DCMAKE_C_COMPILER=/usr/bin/clang-22 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 \
+  -DCMAKE_CXX_FLAGS="-stdlib=libstdc++ -I$(pwd)/thirdparty/rexglue-sdk/thirdparty/imgui -mssse3 -mavx2" \
+  -DREXSDK_DIR=thirdparty/rexglue-sdk
+```
+
+Restore the project manifest backup, then run codegen:
+
+```bash
+cp dantes_inferno_manifest.toml.back dantes_inferno_manifest.toml
+
+cmake --build out/build/linux-release \
+  --target dantes_inferno_codegen
+```
+
+### 7. Apply the generated-code patches
+
+The generated sources need the project-specific patches before the final game
+build:
+
+```bash
+python3 patches/generated/apply_generated_patches.py
+```
+
+### 8. Build the Linux executable
+
+Reconfigure once more:
+
+```bash
+cmake -B out/build/linux-release \
+  -G Ninja \
+  -DCMAKE_C_COMPILER=/usr/bin/clang-22 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 \
+  -DCMAKE_CXX_FLAGS="-stdlib=libstdc++ -I$(pwd)/thirdparty/rexglue-sdk/thirdparty/imgui -mssse3 -mavx2" \
+  -DREXSDK_DIR=thirdparty/rexglue-sdk
+```
+
+Restore the manifest and build the port:
+
+```bash
+cp dantes_inferno_manifest.toml.back dantes_inferno_manifest.toml
+
+cmake --build out/build/linux-release --target dantes_inferno
+```
+
+The resulting Linux executable is:
+
+```text
+out/build/linux-release/dantes_inferno
+```
+
+Remove manifest backup:
+
+```bash
+cp dantes_inferno_manifest.toml.back dantes_inferno_manifest.toml
+rm -rf dantes_inferno_manifest.toml.back
+```
+
+### 9. Run on Linux
+
+From the repository root:
+
+```bash
+./scripts/dantes_inferno_exe.sh
+```
+
+Code `dantes_inferno_exe.sh` is:
+
+```bash
+ LD_LIBRARY_PATH="$PWD/thirdparty/rexglue-sdk/out/linux-amd64:$LD_LIBRARY_PATH" 
+ ./out/build/linux-release/dantes_inferno
+```
+
 ## Progress Tracker
 
 - [x] Game boots, runs, and is fully playable
