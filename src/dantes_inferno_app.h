@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
+#include <thread>
 
 REXCVAR_DEFINE_DOUBLE(time_scalar, 1.0, "Gameplay",
                       "Guest time scaling factor (1.0 = normal, 50.0 = fast-forward)");
@@ -148,34 +149,38 @@ class DantesInfernoApp : public rex::ReXApp {
 
     REXCVAR_SET(input_backend, std::string("sdl"));
 
-    rex::cvar::SetFlagByName("mnk_mode", "true");
-    rex::cvar::SetFlagByName("mnk_mouse", "true");
-    rex::cvar::SetFlagByName("mnk_sensitivity", "1.5");
-
-    rex::cvar::SetFlagByName("keybind_a", "Space");
-    rex::cvar::SetFlagByName("keybind_b", "F");
-    rex::cvar::SetFlagByName("keybind_x", "MouseLeft");
-    rex::cvar::SetFlagByName("keybind_y", "E");
-    rex::cvar::SetFlagByName("keybind_left_shoulder", "Q");
-    rex::cvar::SetFlagByName("keybind_right_shoulder", "MouseRight");
-    rex::cvar::SetFlagByName("keybind_left_trigger", "Shift");
-    rex::cvar::SetFlagByName("keybind_right_trigger", "Ctrl");
-    rex::cvar::SetFlagByName("keybind_lstick_up", "W");
-    rex::cvar::SetFlagByName("keybind_lstick_down", "S");
-    rex::cvar::SetFlagByName("keybind_lstick_left", "A");
-    rex::cvar::SetFlagByName("keybind_lstick_right", "D");
-    rex::cvar::SetFlagByName("keybind_lstick_press", "X");
-    rex::cvar::SetFlagByName("keybind_rstick_up", "Up");
-    rex::cvar::SetFlagByName("keybind_rstick_down", "Down");
-    rex::cvar::SetFlagByName("keybind_rstick_left", "Left");
-    rex::cvar::SetFlagByName("keybind_rstick_right", "Right");
-    rex::cvar::SetFlagByName("keybind_rstick_press", "R");
-    rex::cvar::SetFlagByName("keybind_dpad_up", "Shift+Up");
-    rex::cvar::SetFlagByName("keybind_dpad_down", "Shift+Down");
-    rex::cvar::SetFlagByName("keybind_dpad_left", "Shift+Left");
-    rex::cvar::SetFlagByName("keybind_dpad_right", "Shift+Right");
-    rex::cvar::SetFlagByName("keybind_back", "Tab");
-    rex::cvar::SetFlagByName("keybind_start", "Escape");
+    auto keybind_default = [](const char* name, const char* value) {
+      if (rex::cvar::GetFlagSource(name) == rex::cvar::Source::kDefault) {
+        rex::cvar::SetFlagByName(name, value);
+      }
+    };
+    keybind_default("mnk_mode", "true");
+    keybind_default("mnk_mouse", "true");
+    keybind_default("mnk_sensitivity", "1.5");
+    keybind_default("keybind_a", "Space");
+    keybind_default("keybind_b", "F");
+    keybind_default("keybind_x", "LMB");
+    keybind_default("keybind_y", "E");
+    keybind_default("keybind_left_shoulder", "Q");
+    keybind_default("keybind_right_shoulder", "RMB");
+    keybind_default("keybind_left_trigger", "Shift");
+    keybind_default("keybind_right_trigger", "Control");
+    keybind_default("keybind_lstick_up", "W");
+    keybind_default("keybind_lstick_down", "S");
+    keybind_default("keybind_lstick_left", "A");
+    keybind_default("keybind_lstick_right", "D");
+    keybind_default("keybind_lstick_press", "X");
+    keybind_default("keybind_rstick_up", "Up");
+    keybind_default("keybind_rstick_down", "Down");
+    keybind_default("keybind_rstick_left", "Left");
+    keybind_default("keybind_rstick_right", "Right");
+    keybind_default("keybind_rstick_press", "R");
+    keybind_default("keybind_dpad_up", "Shift+Up");
+    keybind_default("keybind_dpad_down", "Shift+Down");
+    keybind_default("keybind_dpad_left", "Shift+Left");
+    keybind_default("keybind_dpad_right", "Shift+Right");
+    keybind_default("keybind_back", "Tab");
+    keybind_default("keybind_start", "Escape");
 
     double target_aspect = REXCVAR_GET(ultrawide_target_aspect);
     if (target_aspect > 0.0) {
@@ -259,6 +264,7 @@ class DantesInfernoApp : public rex::ReXApp {
       rex::chrono::Clock::set_guest_time_scalar(target);
       rex::cvar::SetFlagByName("vsync", fast ? "true" : "false");
     });
+
   }
 
   void OnShutdown() override {

@@ -44,6 +44,7 @@
     <Compile Include="DisplayOptions.cs" />
     <Compile Include="GameConfig.cs" />
     <Compile Include="GitHubUpdater.cs" />
+    <Compile Include="LanguageManifest.cs" />
     <Compile Include="LauncherLocalizer.cs" />
     <Compile Include="PathHelper.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

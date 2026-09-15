@@ -1,57 +1,3 @@
-diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
---- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
-+++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
-@@ -15,1 +15,3 @@
-+#include <atomic>
-+#include <rex/cvar.h>
- #include <rex/filesystem/device.h>
-@@ -216,6 +218,46 @@
-       result = file->Read(buffer.guest_address(), buffer_length,
-                           byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
-                           &bytes_read, apc_context.guest_address());
-+      if (file->entry() && rex::cvar::Query<bool>("dlc_trace")) {
-+        std::string name = file->name();
-+        for (char& c : name) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
-+        if (name.ends_with(".dlm") || name.ends_with(".lu2")) {
-+          static std::atomic<uint32_t> traced_reads{0};
-+          uint32_t id = traced_reads.fetch_add(1, std::memory_order_relaxed) + 1;
-+          auto* ts = rex::runtime::ThreadState::Get();
-+          if (id <= 32 && ts) {
-+            const auto* ctx = ts->context();
-+            REXFS_INFO("DLC-IO-TRACE: id={} file={} handle={:08X} buffer={:08X} "
-+                       "requested={} bytes={} status={:08X} sp={:08X} lr={:08X}",
-+                       id, file->path(), uint32_t(file_handle), buffer.guest_address(),
-+                       uint32_t(buffer_length), bytes_read, result, ctx->r1.u32,
-+                       uint32_t(ctx->lr));
-+            auto* memory = REX_KERNEL_MEMORY();
-+            auto read_word = [memory](uint32_t address, uint32_t& value) {
-+              if ((address & 3) || address > UINT32_MAX - 4) return false;
-+              auto* heap = memory->LookupHeap(address);
-+              rex::memory::HeapAllocationInfo info{};
-+              if (!heap || !heap->QueryRegionInfo(address, &info) ||
-+                  !(info.state & rex::memory::kMemoryAllocationCommit) ||
-+                  !(info.protect & rex::memory::kMemoryProtectRead) ||
-+                  uint64_t(address) + 4 > uint64_t(info.base_address) + info.region_size)
-+                return false;
-+              value = rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
-+              return true;
-+            };
-+            uint32_t frame = ctx->r1.u32;
-+            for (uint32_t depth = 0; depth < 16; ++depth) {
-+              uint32_t parent = 0, saved_lr = 0;
-+              if (!read_word(frame, parent) || parent <= frame || (parent & 15) ||
-+                  uint64_t(parent) - ctx->r1.u32 > 0x100000 ||
-+                  !read_word(parent - 8, saved_lr)) break;
-+              REXFS_INFO("DLC-IO-TRACE: id={} frame={} sp={:08X} parent={:08X} saved_lr={:08X}",
-+                         id, depth, frame, parent, saved_lr);
-+              frame = parent;
-+            }
-+          }
-+        }
-+      }
-       if (io_status_block) {
-         io_status_block->status = result;
-         io_status_block->information = bytes_read;
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
 index 96d362b..f83f172 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
@@ -67,7 +13,7 @@ index 96d362b..f83f172 100644
    explicit D3D12CommandProcessor(D3D12GraphicsSystem* graphics_system,
                                   system::KernelState* kernel_state);
 diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
-index 4d845c7..ed663c7 100644
+index 4d845c7..3d9c5ec 100644
 --- a/include/rex/graphics/d3d12/texture_cache.h
 +++ b/include/rex/graphics/d3d12/texture_cache.h
 @@ -114,7 +114,12 @@ class D3D12TextureCache final : public TextureCache {
@@ -276,7 +222,7 @@ index 83d09f7..be3e231 100644
    // refresher ones (for writing to them via the guest_output_resources_
    // references) and the paint one (for presenting it via the
 diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
-index afb4a30..bf56629 100644
+index afb4a30..1054b05 100644
 --- a/include/rex/ui/presenter.h
 +++ b/include/rex/ui/presenter.h
 @@ -101,6 +101,8 @@ class AppUIDrawContext : public UIDrawContext {
@@ -452,7 +398,7 @@ index 3dd7fa5..165711f 100644
    emitVectorTempEA(ctx);
    ctx.println(
 diff --git a/src/codegen/builders/vector.cpp b/src/codegen/builders/vector.cpp
-index cbdd7f7..bacd019 100644
+index cbdd7f7..ae7925f 100644
 --- a/src/codegen/builders/vector.cpp
 +++ b/src/codegen/builders/vector.cpp
 @@ -32,13 +32,17 @@ namespace rex::codegen {
@@ -987,6 +933,40 @@ index fdecb6f..646bd88 100644
 +void dataSectionFunctionPointerScan(CodegenContext& ctx);
 +
  }  // namespace rex::codegen
+diff --git a/src/filesystem/entry.cpp b/src/filesystem/entry.cpp
+index 163c257..c01e0e3 100644
+--- a/src/filesystem/entry.cpp
++++ b/src/filesystem/entry.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <string>
+ 
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/device.h>
+@@ -80,13 +81,21 @@ Entry* Entry::ResolvePath(const std::string_view path) {
+ Entry* Entry::IterateChildren(const rex::filesystem::WildcardEngine& engine,
+                               size_t* current_index) {
+   auto global_lock = global_critical_region_.Acquire();
++  bool is_content_device =
++      device_->mount_path().find("\\Device\\Content") != std::string::npos;
+   while (*current_index < children_.size()) {
+     auto& child = children_[*current_index];
+     *current_index = *current_index + 1;
+     if (engine.Match(child->name())) {
++      if (is_content_device) {
++        REXFS_INFO("[DLC-ENUM] {} '{}' -> '{}'", device_->mount_path(), path_, child->name());
++      }
+       return child.get();
+     }
+   }
++  if (is_content_device) {
++    REXFS_INFO("[DLC-ENUM] {} '{}' -> <end>", device_->mount_path(), path_);
++  }
+   return nullptr;
+ }
+ 
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
 index 19874a5..bab7836 100644
 --- a/src/graphics/d3d12/command_processor.cpp
@@ -1347,7 +1327,7 @@ index dd321a5..50fc6a6 100644
      path_ = Path::kHostRenderTargets;
    } else if (REXCVAR_GET(render_target_path_d3d12) == "rov") {
 diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
-index 2be0e8e..b208519 100644
+index 2be0e8e..ee55a44 100644
 --- a/src/graphics/d3d12/texture_cache.cpp
 +++ b/src/graphics/d3d12/texture_cache.cpp
 @@ -13,11 +13,17 @@
@@ -2253,20 +2233,22 @@ index 2be0e8e..b208519 100644
      unsupported_format_features_used_[uint32_t(format)] |=
          is_signed ? kUnsupportedSnormBit : kUnsupportedUnormBit;
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 8f2fcb0..d38e0d5 100644
+index 8f2fcb0..9e4c937 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
-@@ -38,4 +38,9 @@ REXCVAR_DEFINE_BOOL(store_shaders, true, "GPU",
+@@ -39,6 +39,11 @@ REXCVAR_DEFINE_BOOL(store_shaders, true, "GPU",
                      "Store shaders persistently and load them when loading games to avoid "
                      "runtime spikes and freezes when playing the game not for the first time.");
-+
+ 
 +REXCVAR_DEFINE_DOUBLE(target_fps, 0.0, "Diagnostics",
 +                      "Override guest vblank cadence in Hz (0=use video_mode_refresh_rate). "
 +                      "Diagnostic-only: does not change VdQueryVideoMode or MarkVblank.")
 +    .range(0.0, 240.0);
- 
++
  namespace {
-@@ -153,4 +158,8 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+ 
+ rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
+@@ -153,6 +158,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
          system::X_VIDEO_MODE video_mode;
          kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
          double refresh_rate_hz = std::max(1.0, double(float(video_mode.refresh_rate)));
@@ -2275,6 +2257,8 @@ index 8f2fcb0..d38e0d5 100644
 +          refresh_rate_hz = std::clamp(target_fps_value, 1.0, 240.0);
 +        }
          uint64_t guest_tick_frequency = chrono::Clock::guest_tick_frequency();
+         uint64_t vsync_interval_ticks =
+             std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
 @@ -166,7 +175,13 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
              MarkVblank();
              last_frame_time += interval_ticks;
@@ -2379,7 +2363,7 @@ index a7d508a..c3a15ea 100644
  #include <rex/graphics/pipeline/render_target/cache.h>
  #include <rex/graphics/pipeline/shader/dxbc_translator.h>
 diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
-index 76f5600..8a8c6b5 100644
+index 76f5600..70307c1 100644
 --- a/src/graphics/pipeline/texture/cache.cpp
 +++ b/src/graphics/pipeline/texture/cache.cpp
 @@ -45,7 +45,7 @@ REXCVAR_DEFINE_INT32(texture_cache_memory_limit_soft_lifetime, 30, "GPU",
@@ -2770,6 +2754,73 @@ index ec0df7c..78a020a 100644
  bool SharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_allocations,
                                                      uint32_t length_allocations) {
    assert_always(
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 3f9422d..55f07a6 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -68,9 +68,9 @@ constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x
+ // Bind values are a comma-separated list of alternatives, each optionally
+ // carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
+ // so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
+-// it. That is what lets the D-pad share the arrow keys. A consequence is
+-// that binding a bare modifier name ("Shift") can never fire, since holding it
+-// makes the live mask non-zero while the bind wants zero.
++// it. That is what lets the D-pad share the arrow keys. A bind naming a
++// modifier key itself ("Shift") ignores that key's own contribution to the
++// live mask so it fires when only that modifier is held.
+ constexpr uint8_t kModShift = 1u << 0;
+ constexpr uint8_t kModCtrl = 1u << 1;
+ constexpr uint8_t kModAlt = 1u << 2;
+@@ -124,13 +124,20 @@ std::string_view TrimSpaces(std::string_view s) {
+ 
+ bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
+   uint8_t want = TakeModifiers(token);
+-  if (want != live_mods) {
+-    return false;
+-  }
+   rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
+   if (vk == rex::ui::VirtualKey::kNone) {
+     return false;
+   }
++  if (vk == rex::ui::VirtualKey::kShift) {
++    live_mods &= ~kModShift;
++  } else if (vk == rex::ui::VirtualKey::kControl) {
++    live_mods &= ~kModCtrl;
++  } else if (vk == rex::ui::VirtualKey::kMenu) {
++    live_mods &= ~kModAlt;
++  }
++  if (want != live_mods) {
++    return false;
++  }
+   uint16_t idx = static_cast<uint16_t>(vk);
+   return idx < 256 && key_down[idx];
+ }
+@@ -510,6 +517,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
+     case rex::ui::MouseEvent::Button::kMiddle:
+       SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), true);
+       break;
++    case rex::ui::MouseEvent::Button::kX1:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton1), true);
++      break;
++    case rex::ui::MouseEvent::Button::kX2:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton2), true);
++      break;
+     default:
+       break;
+   }
+@@ -529,6 +542,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+     case rex::ui::MouseEvent::Button::kMiddle:
+       SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), false);
+       break;
++    case rex::ui::MouseEvent::Button::kX1:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton1), false);
++      break;
++    case rex::ui::MouseEvent::Button::kX2:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton2), false);
++      break;
+     default:
+       break;
+   }
 diff --git a/src/kernel/xam/apps/xlivebase_app.cpp b/src/kernel/xam/apps/xlivebase_app.cpp
 index 3593403..6275aba 100644
 --- a/src/kernel/xam/apps/xlivebase_app.cpp
@@ -2845,6 +2896,41 @@ index f153b69..b96ef96 100644
    return X_ERROR_SUCCESS;
  }
  
+diff --git a/src/kernel/xam/xam_info.cpp b/src/kernel/xam/xam_info.cpp
+index 1fda053..ac3e009 100644
+--- a/src/kernel/xam/xam_info.cpp
++++ b/src/kernel/xam/xam_info.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/kernel/xam/module.h>
+ #include <rex/kernel/xam/private.h>
++#include <rex/system/flags.h>
+ #include <rex/logging.h>
+ #include <rex/hook.h>
+ #include <rex/types.h>
+@@ -183,18 +184,10 @@ u32 XGetGameRegion_entry() {
+ }
+ 
+ u32 XGetLanguage_entry() {
+-  auto desired_language = XLanguage::kEnglish;
+-
+-  // Switch the language based on game region.
+-  // TODO(benvanik): pull from xex header.
+-  uint32_t game_region = XEX_REGION_NTSCU;
+-  if (game_region & XEX_REGION_NTSCU) {
+-    desired_language = XLanguage::kEnglish;
+-  } else if (game_region & XEX_REGION_NTSCJ) {
+-    desired_language = XLanguage::kJapanese;
+-  }
+-  // Add more overrides?
+-
++  auto user_lang = REXCVAR_GET(user_language);
++  auto desired_language = (user_lang > 0 && user_lang < uint32_t(XLanguage::kMaxLanguages))
++                              ? static_cast<XLanguage>(user_lang)
++                              : XLanguage::kEnglish;
+   return uint32_t(desired_language);
+ }
+ 
 diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
 index 5a572ce..2f9f37d 100644
 --- a/src/kernel/xam/xam_ui.cpp
@@ -2858,6 +2944,74 @@ index 5a572ce..2f9f37d 100644
                  uint32_t(user_index), uint32_t(content_type), uint32_t(content_flags),
                  uint64_t(total_requested), device_id_ptr.guest_address(),
                  overlapped.guest_address());
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+index 3f1a852..a6e6ed7 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+@@ -12,6 +12,8 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <atomic>
++#include <rex/cvar.h>
+ #include <rex/filesystem/device.h>
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/logging.h>
+@@ -20,6 +22,7 @@
+ #include <rex/types.h>
+ #include <rex/system/info/file.h>
+ #include <rex/system/kernel_state.h>
++#include <rex/system/thread_state.h>
+ #include <rex/system/util/string_utils.h>
+ #include <rex/system/xevent.h>
+ #include <rex/system/xfile.h>
+@@ -216,6 +219,46 @@ u32 NtReadFile_entry(u32 file_handle, u32 event_handle, mapped_void apc_routine_
+       result = file->Read(buffer.guest_address(), buffer_length,
+                           byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
+                           &bytes_read, apc_context.guest_address());
++      if (file->entry() && rex::cvar::Query<bool>("dlc_trace")) {
++        std::string name = file->name();
++        for (char& c : name) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
++        if (name.ends_with(".dlm") || name.ends_with(".lu2")) {
++          static std::atomic<uint32_t> traced_reads{0};
++          uint32_t id = traced_reads.fetch_add(1, std::memory_order_relaxed) + 1;
++          auto* ts = rex::runtime::ThreadState::Get();
++          if (id <= 32 && ts) {
++            const auto* ctx = ts->context();
++            REXFS_INFO("DLC-IO-TRACE: id={} file={} handle={:08X} buffer={:08X} "
++                       "requested={} bytes={} status={:08X} sp={:08X} lr={:08X}",
++                       id, file->path(), uint32_t(file_handle), buffer.guest_address(),
++                       uint32_t(buffer_length), bytes_read, result, ctx->r1.u32,
++                       uint32_t(ctx->lr));
++            auto* memory = REX_KERNEL_MEMORY();
++            auto read_word = [memory](uint32_t address, uint32_t& value) {
++              if ((address & 3) || address > UINT32_MAX - 4) return false;
++              auto* heap = memory->LookupHeap(address);
++              rex::memory::HeapAllocationInfo info{};
++              if (!heap || !heap->QueryRegionInfo(address, &info) ||
++                  !(info.state & rex::memory::kMemoryAllocationCommit) ||
++                  !(info.protect & rex::memory::kMemoryProtectRead) ||
++                  uint64_t(address) + 4 > uint64_t(info.base_address) + info.region_size)
++                return false;
++              value = rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
++              return true;
++            };
++            uint32_t frame = ctx->r1.u32;
++            for (uint32_t depth = 0; depth < 16; ++depth) {
++              uint32_t parent = 0, saved_lr = 0;
++              if (!read_word(frame, parent) || parent <= frame || (parent & 15) ||
++                  uint64_t(parent) - ctx->r1.u32 > 0x100000 ||
++                  !read_word(parent - 8, saved_lr)) break;
++              REXFS_INFO("DLC-IO-TRACE: id={} frame={} sp={:08X} parent={:08X} saved_lr={:08X}",
++                         id, depth, frame, parent, saved_lr);
++              frame = parent;
++            }
++          }
++        }
++      }
+       if (io_status_block) {
+         io_status_block->status = result;
+         io_status_block->information = bytes_read;
 diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
 index 1254710..3308c40 100644
 --- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
@@ -2906,7 +3060,7 @@ index bd43109..d3f9791 100644
  
  PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
 diff --git a/src/system/mmio_handler.cpp b/src/system/mmio_handler.cpp
-index 2b93005..144e36b 100644
+index 2b93005..881be9a 100644
 --- a/src/system/mmio_handler.cpp
 +++ b/src/system/mmio_handler.cpp
 @@ -13,6 +13,11 @@
@@ -3146,7 +3300,7 @@ index 76cc877..b0c4004 100644
    }
  
 diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
-index 306118e..2543c5c 100644
+index 306118e..084b551 100644
 --- a/src/ui/d3d12/d3d12_presenter.cpp
 +++ b/src/ui/d3d12/d3d12_presenter.cpp
 @@ -33,6 +33,11 @@
@@ -3461,6 +3615,60 @@ index 306118e..2543c5c 100644
    // Even if presentation has failed, work might have been enqueued anyway
    // internally before the failure according to Jesse Natalie from the DirectX
    // Discord server.
+diff --git a/src/ui/keybinds.cpp b/src/ui/keybinds.cpp
+index 9822f3b..ec8aaa3 100644
+--- a/src/ui/keybinds.cpp
++++ b/src/ui/keybinds.cpp
+@@ -95,6 +95,7 @@ static const std::unordered_map<std::string, VirtualKey> kKeyNames = {
+     {"LBracket", VirtualKey::kOem4},
+     {"RBracket", VirtualKey::kOem6},
+     {"Quote", VirtualKey::kOem7},
++    {"Oem102", VirtualKey::kOem102},
+     // Control
+     {"Escape", VirtualKey::kEscape},
+     {"Return", VirtualKey::kReturn},
+@@ -116,6 +117,19 @@ static const std::unordered_map<std::string, VirtualKey> kKeyNames = {
+     {"Shift", VirtualKey::kShift},
+     {"Control", VirtualKey::kControl},
+     {"Alt", VirtualKey::kMenu},
++    // Modifier aliases
++    {"Ctrl", VirtualKey::kControl},
++    {"LeftShift", VirtualKey::kShift},
++    {"RightShift", VirtualKey::kShift},
++    {"LeftCtrl", VirtualKey::kControl},
++    {"RightCtrl", VirtualKey::kControl},
++    {"LeftControl", VirtualKey::kControl},
++    {"RightControl", VirtualKey::kControl},
++    {"LeftAlt", VirtualKey::kMenu},
++    {"RightAlt", VirtualKey::kMenu},
++    // Control aliases
++    {"Enter", VirtualKey::kReturn},
++    {"Esc", VirtualKey::kEscape},
+     // Numpad
+     {"Numpad0", VirtualKey::kNumpad0},
+     {"Numpad1", VirtualKey::kNumpad1},
+@@ -132,6 +146,7 @@ static const std::unordered_map<std::string, VirtualKey> kKeyNames = {
+     {"NumpadMinus", VirtualKey::kSubtract},
+     {"NumpadStar", VirtualKey::kMultiply},
+     {"NumpadSlash", VirtualKey::kDivide},
++    {"NumpadDecimal", VirtualKey::kDecimal},
+     {"PrintScreen", VirtualKey::kSnapshot},
+     {"Pause", VirtualKey::kPause},
+     {"CapsLock", VirtualKey::kCapital},
+@@ -141,6 +156,13 @@ static const std::unordered_map<std::string, VirtualKey> kKeyNames = {
+     {"LMB", VirtualKey::kLButton},
+     {"RMB", VirtualKey::kRButton},
+     {"MMB", VirtualKey::kMButton},
++    {"MouseLeft", VirtualKey::kLButton},
++    {"MouseRight", VirtualKey::kRButton},
++    {"MouseMiddle", VirtualKey::kMButton},
++    {"Mouse4", VirtualKey::kXButton1},
++    {"Mouse5", VirtualKey::kXButton2},
++    {"XButton1", VirtualKey::kXButton1},
++    {"XButton2", VirtualKey::kXButton2},
+ };
+ 
+ VirtualKey ParseVirtualKey(std::string_view name) {
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
 index 7360ed9..383b1ba 100644
 --- a/src/ui/presenter.cpp
@@ -3476,39 +3684,6 @@ index 7360ed9..383b1ba 100644
    uint32_t last_acquired_and_ready =
        guest_output_mailbox_acquired_and_ready_.load(std::memory_order_relaxed);
    // Desired acquired = current acquired (changed only by the consumers).
-diff --git a/src/filesystem/entry.cpp b/src/filesystem/entry.cpp
---- a/src/filesystem/entry.cpp
-+++ b/src/filesystem/entry.cpp
-@@ -12,6 +12,7 @@
- 
- #include <algorithm>
-+#include <string>
- 
- #include <rex/filesystem.h>
- #include <rex/filesystem/device.h>
-@@ -84,15 +85,22 @@ Entry* Entry::ResolvePath(const std::string_view path) {
- Entry* Entry::IterateChildren(const rex::filesystem::WildcardEngine& engine,
-                               size_t* current_index) {
-   auto global_lock = global_critical_region_.Acquire();
-+  bool is_content_device =
-+      device_->mount_path().find("\\Device\\Content") != std::string::npos;
-   while (*current_index < children_.size()) {
-     auto& child = children_[*current_index];
-     *current_index = *current_index + 1;
--    if (engine.Match(child->name())) {
--      if (device_->mount_path().find("\\Device\\Content") != std::string::npos) {
-+    if (engine.Match(child->name())) {
-+      if (is_content_device) {
-         REXFS_INFO("[DLC-ENUM] {} '{}' -> '{}'", device_->mount_path(), path_, child->name());
-       }
-       return child.get();
-     }
-   }
--  if (device_->mount_path().find("\\Device\\Content") != std::string::npos) {
-+  if (is_content_device) {
-     REXFS_INFO("[DLC-ENUM] {} '{}' -> <end>", device_->mount_path(), path_);
-   }
-   return nullptr;
 diff --git a/thirdparty/libmspack b/thirdparty/libmspack
 --- a/thirdparty/libmspack
 +++ b/thirdparty/libmspack

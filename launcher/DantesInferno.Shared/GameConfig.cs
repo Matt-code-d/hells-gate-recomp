@@ -204,10 +204,10 @@ namespace DantesInferno
 
         public string KeybindA { get { return this["keybind_a"] ?? "Space"; } set { this["keybind_a"] = value; } }
         public string KeybindB { get { return this["keybind_b"] ?? "F"; } set { this["keybind_b"] = value; } }
-        public string KeybindX { get { return this["keybind_x"] ?? "MouseLeft"; } set { this["keybind_x"] = value; } }
+        public string KeybindX { get { return this["keybind_x"] ?? "LMB"; } set { this["keybind_x"] = value; } }
         public string KeybindY { get { return this["keybind_y"] ?? "E"; } set { this["keybind_y"] = value; } }
         public string KeybindLeftShoulder { get { return this["keybind_left_shoulder"] ?? "Q"; } set { this["keybind_left_shoulder"] = value; } }
-        public string KeybindRightShoulder { get { return this["keybind_right_shoulder"] ?? "MouseRight"; } set { this["keybind_right_shoulder"] = value; } }
+        public string KeybindRightShoulder { get { return this["keybind_right_shoulder"] ?? "RMB"; } set { this["keybind_right_shoulder"] = value; } }
         public string KeybindLeftTrigger { get { return this["keybind_left_trigger"] ?? "Shift"; } set { this["keybind_left_trigger"] = value; } }
         public string KeybindRightTrigger { get { return this["keybind_right_trigger"] ?? "Ctrl"; } set { this["keybind_right_trigger"] = value; } }
         public string KeybindLStickUp { get { return this["keybind_lstick_up"] ?? "W"; } set { this["keybind_lstick_up"] = value; } }

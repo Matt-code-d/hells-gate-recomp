@@ -23,6 +23,8 @@ namespace DantesInferno.Launcher
         public MainWindow()
         {
             InitializeComponent();
+            TabControls.AddHandler(System.Windows.Controls.TextBox.PreviewMouseDownEvent,
+                new System.Windows.Input.MouseButtonEventHandler(KeyField_PreviewMouseDown), true);
             InitializeTheme();
             LoadConfiguration();
             PopulateControls();
@@ -299,9 +301,20 @@ namespace DantesInferno.Launcher
         {
             
             var languageItems = new List<KeyValuePair<uint, string>>();
-            string xexPath = Path.Combine(_config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir), "default.xex");
+            string gameDir = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
+            string xexPath = Path.Combine(gameDir, "default.xex");
 
-            if (File.Exists(xexPath))
+            var discLangs = LanguageManifest.GetDiscTextLanguages(gameDir);
+            if (discLangs != null)
+            {
+                foreach (var entry in discLangs)
+                {
+                    string name = XexParser.LanguageNames.TryGetValue(entry.Id, out string known)
+                        ? known : entry.Name;
+                    languageItems.Add(new KeyValuePair<uint, string>(entry.Id, name));
+                }
+            }
+            else if (File.Exists(xexPath))
             {
                 var xexInfo = XexParser.Parse(xexPath);
                 if (xexInfo != null)
@@ -390,52 +403,9 @@ namespace DantesInferno.Launcher
             var box = sender as System.Windows.Controls.TextBox;
             if (box == null) return;
 
-            var key = e.Key;
-            if (key == System.Windows.Input.Key.LeftShift || key == System.Windows.Input.Key.RightShift ||
-                key == System.Windows.Input.Key.LeftCtrl || key == System.Windows.Input.Key.RightCtrl ||
-                key == System.Windows.Input.Key.LeftAlt || key == System.Windows.Input.Key.RightAlt ||
-                key == System.Windows.Input.Key.LWin || key == System.Windows.Input.Key.RWin)
-            {
-                
-                string mod = null;
-                if (key == System.Windows.Input.Key.LeftShift || key == System.Windows.Input.Key.RightShift) mod = "Shift";
-                else if (key == System.Windows.Input.Key.LeftCtrl || key == System.Windows.Input.Key.RightCtrl) mod = "Ctrl";
-                else if (key == System.Windows.Input.Key.LeftAlt || key == System.Windows.Input.Key.RightAlt) mod = "Alt";
-                if (mod != null)
-                {
-                    string current = box.Text;
-                    if (current.StartsWith(mod + "+")) return; 
-                    box.Text = string.IsNullOrEmpty(current) ? mod + "+" : mod + "+" + current;
-                }
-                return;
-            }
-
-            string keyName;
-            if (key == System.Windows.Input.Key.Space) keyName = "Space";
-            else if (key == System.Windows.Input.Key.Up) keyName = "Up";
-            else if (key == System.Windows.Input.Key.Down) keyName = "Down";
-            else if (key == System.Windows.Input.Key.Left) keyName = "Left";
-            else if (key == System.Windows.Input.Key.Right) keyName = "Right";
-            else if (key == System.Windows.Input.Key.Escape) keyName = "Escape";
-            else if (key == System.Windows.Input.Key.Tab) keyName = "Tab";
-            else if (key == System.Windows.Input.Key.Enter) keyName = "Enter";
-            else if (key == System.Windows.Input.Key.Back) keyName = "Backspace";
-            else if (key == System.Windows.Input.Key.Delete) keyName = "Delete";
-            else if (key == System.Windows.Input.Key.Home) keyName = "Home";
-            else if (key == System.Windows.Input.Key.End) keyName = "End";
-            else if (key == System.Windows.Input.Key.PageUp) keyName = "PageUp";
-            else if (key == System.Windows.Input.Key.PageDown) keyName = "PageDown";
-            else if (key == System.Windows.Input.Key.LeftShift || key == System.Windows.Input.Key.RightShift) keyName = "Shift";
-            else if (key == System.Windows.Input.Key.LeftCtrl || key == System.Windows.Input.Key.RightCtrl) keyName = "Ctrl";
-            else keyName = key.ToString();
-
-            var mods = new List<string>();
-            if (System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift))
-                mods.Add("Shift");
-            if (System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control))
-                mods.Add("Ctrl");
-            if (System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Alt))
-                mods.Add("Alt");
+            var key = e.Key == System.Windows.Input.Key.System ? e.SystemKey : e.Key;
+            string keyName = KeybindNames.FromWpfKey(key);
+            if (keyName == null) return;
 
             if (keyName == "Shift" || keyName == "Ctrl" || keyName == "Alt")
             {
@@ -443,20 +413,31 @@ namespace DantesInferno.Launcher
                 return;
             }
 
-            if (mods.Count > 0)
-                box.Text = string.Join("+", mods) + "+" + keyName;
-            else
-                box.Text = keyName;
+            box.Text = KeybindNames.ModifierPrefix() + keyName;
+        }
+
+        private void KeyField_PreviewMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            var box = e.OriginalSource as System.Windows.Controls.TextBox;
+            if (box == null) return;
+            if (e.ChangedButton == System.Windows.Input.MouseButton.Left && !box.IsFocused)
+                return;
+
+            string name = KeybindNames.FromWpfMouseButton(e.ChangedButton);
+            if (name == null) return;
+
+            box.Text = KeybindNames.ModifierPrefix() + name;
+            e.Handled = true;
         }
 
         private void ResetKeybinds_Click(object sender, RoutedEventArgs e)
         {
             _config.KeybindA = "Space";
             _config.KeybindB = "F";
-            _config.KeybindX = "MouseLeft";
+            _config.KeybindX = "LMB";
             _config.KeybindY = "E";
             _config.KeybindLeftShoulder = "Q";
-            _config.KeybindRightShoulder = "MouseRight";
+            _config.KeybindRightShoulder = "RMB";
             _config.KeybindLeftTrigger = "Shift";
             _config.KeybindRightTrigger = "Ctrl";
             _config.KeybindLStickUp = "W";

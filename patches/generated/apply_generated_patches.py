@@ -325,6 +325,57 @@ def patch_unresolved(files, contents, gen_dir):
         for t in unique:
             print(f"    {t}")
 
+def patch_language_fallback(files, contents):
+    """Phase 3: when the requested language ID is absent from the game's
+    runtime tables, retry the lookup with English (id 1) so unsupported
+    selections fall back to English instead of record 0 (Italian on the
+    pal_it SKU)."""
+    print("== Phase 3: unsupported-language fallback ==")
+    anchor = 'loc_823C2504:\n'
+    inject = (
+        '\t{\n'
+        '\t\tuint32_t lang_tbl = REX_LOAD_U32(ctx.r31.u32 + 32);\n'
+        '\t\tif (lang_tbl) {\n'
+        '\t\t\tif (ctx.r7.s32 < 0) {\n'
+        '\t\t\t\tuint32_t cnt = REX_LOAD_U32(lang_tbl + 232);\n'
+        '\t\t\t\tuint32_t arr = REX_LOAD_U32(lang_tbl + 240);\n'
+        '\t\t\t\tfor (uint32_t i = 0; arr && i < cnt; ++i)\n'
+        '\t\t\t\t\tif ((int32_t)REX_LOAD_U32(arr + i * 100 + 64) == 1) {\n'
+        '\t\t\t\t\t\tctx.r7.u64 = i;\n'
+        '\t\t\t\t\t\tbreak;\n'
+        '\t\t\t\t\t}\n'
+        '\t\t\t}\n'
+        '\t\t\tif (ctx.r30.s32 < 0) {\n'
+        '\t\t\t\tuint32_t cnt = REX_LOAD_U32(lang_tbl + 228);\n'
+        '\t\t\t\tuint32_t arr = REX_LOAD_U32(lang_tbl + 236);\n'
+        '\t\t\t\tfor (uint32_t i = 0; arr && i < cnt; ++i)\n'
+        '\t\t\t\t\tif ((int32_t)REX_LOAD_U32(arr + i * 104 + 64) == 1) {\n'
+        '\t\t\t\t\t\tctx.r30.u64 = i;\n'
+        '\t\t\t\t\t\tbreak;\n'
+        '\t\t\t\t\t}\n'
+        '\t\t\t}\n'
+        '\t\t}\n'
+        '\t}\n')
+    done = False
+    for filepath in files:
+        content = contents[filepath]
+        if anchor not in content:
+            continue
+        if 'LANGFALLBACK' in content or inject in content:
+            print(f"  already applied ({os.path.basename(filepath)})")
+            done = True
+            continue
+        new, n = re.subn(re.escape(anchor), anchor + inject, content, count=1)
+        if n:
+            contents[filepath] = new
+            write(filepath, new)
+            print(f"  Applied: en-fallback at loc_823C2504 "
+                  f"({os.path.basename(filepath)})")
+            done = True
+    if not done:
+        print("  WARNING: loc_823C2504 anchor not found "
+              "(only exists in TU2 codegen)")
+
 def count_remaining_fatals(files, contents):
     total = 0
     for filepath in files:
@@ -344,6 +395,7 @@ def main():
     files, contents, setjmp_names, longjmp_names = scan_generated(gen_dir)
     patch_fibers(files, contents, setjmp_names, longjmp_names)
     patch_unresolved(files, contents, gen_dir)
+    patch_language_fallback(files, contents)
 
     remaining = count_remaining_fatals(files, contents)
     print(f"== Done. Remaining REX_FATAL unresolved traps: {remaining} ==")
