@@ -6,7 +6,7 @@
 #define MyAppPublisher "florinp93"
 #define MyAppURL "https://github.com/florinp93/dantes-inferno"
 #define MyAppExeName "DantesInfernoLauncher.exe"
-#define MyAppVersion "0.6.2-beta"
+#define MyAppVersion "0.6.3-beta"
 
 [Setup]
 AppId={{DANTES-INFERNO-PC-PORT}}
