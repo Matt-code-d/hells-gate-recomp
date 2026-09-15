@@ -152,6 +152,66 @@ Key components:
 - `XUserFindUsers` handler in `xlivebase_app.cpp` returns success to
   prevent null-pointer crash when loading saves
 
+## Title Update 2 (TU2) and playable DLC
+
+The game requires Title Update 2 (TU2) to enable playable DLC content
+like Trials of Saint Lucia. The TU2 patch is applied at runtime via
+`game/default.xexp` (the patched XEX). The runtime reports:
+`XEX patch applied successfully: base version: 0.0.0.3, new version: 0.0.2.3`
+
+### TU2-patched entry point
+
+The TU2 patch changes the XEX entry point from `0x826A6790` (original) to
+`0x8281DAC8` (TU2). The codegen explicitly registers this entry point via
+`registerEntryPoints()` in `thirdparty/rexglue-sdk/src/codegen/phase_register.cpp`.
+
+### TU2-patched functions in manifest
+
+The TU2 patch introduces new function entry points that are called through
+indirect calls but not discovered by PDATA or function pointer scanning.
+These are registered in the manifest under `[entrypoint.functions.0xADDR]`:
+
+```toml
+[entrypoint.functions.0x8236E3C0]
+[entrypoint.functions.0x825D2C30]
+# ... (see dantes_inferno_manifest.toml for full list)
+```
+
+### Unresolved call patching
+
+The codegen may emit `REX_FATAL("Unresolved call from 0xSITE to 0xTARGET")`
+for branches/calls that are not connected to a `CallTarget` in the
+`FunctionNode` graph. The `patches/generated/fix_unresolved_calls.py` script
+post-processes generated code to replace these fatal traps with:
+- Direct function calls (if the target is registered)
+- `goto` labels (if the target is a label in the same function)
+
+### Full TU2 rebuild workflow
+
+```powershell
+# 1. Ensure game/default.xexp is present (TU2 patch)
+# 2. Delete generated files
+Remove-Item generated\default\* -Force
+# 3. Run codegen
+rexglue --force codegen dantes_inferno_manifest.toml --ignore-stamp
+# 4. Apply fiber/setjmp/longjmp patches
+python patches\generated\apply_generated_patches.py
+# 5. Apply unresolved-call patches
+python patches\generated\fix_unresolved_calls.py
+# 6. Reconfigure and build
+cmake --preset win-amd64-release -DREXSDK_DIR=thirdparty\rexglue-sdk
+cmake --build out\build\win-amd64-release
+# 7. Run with TU2 enabled (default.xexp must be in game/)
+out\build\win-amd64-release\dantes_inferno.exe --game_data_root=game --dlc_trace=true
+```
+
+### DLC verification
+
+- Item DLC (costumes/relics/souls): accessed via `\Device\Content\1-18`
+- Trials of Saint Lucia: accessed via `\Device\Content\33` (fe_arena.vp6)
+- The game runs at 240 FPS with 0 unresolved function calls when all
+  TU2 functions are properly registered
+
 ## Asset extraction tool
 
 `tools/asset_tool.py` extracts and repacks game assets for upscaling. See
@@ -208,6 +268,59 @@ implemented in pure Python.
       extraction, EAGM mesh extraction
 - [x] Graphics quality cvars configured in OnPreSetup
 - [x] MnK keybind defaults configured in OnPreSetup
-- [ ] DLC auto-install hook in OnPostSetup
+- [x] TU2 patch applied: entry point registration, manifest functions,
+      unresolved-call patching, fiber patches for TU2 patterns
+- [x] Trials of Saint Lucia DLC detected: fe_arena.vp6 accessed from
+      \Device\Content\33, game runs at 240 FPS with 0 unresolved calls
+- [x] Item DLC (costumes/relics/souls) verified working alongside Trials DLC
+- [x] DLC auto-install hook in OnPostSetup (scans dlc/ folder, calls
+      ContentManager::InstallContent on each STFS package)
+- [x] TU2 patch bundled with installer (default.xexp copied to game/ folder)
+- [x] Launcher DLC tab: Open DLC Folder / Open TU Folder buttons,
+      DLC count and TU status display
 - [ ] Ultrawide projection hook (requires RE of generated code)
 - [ ] Button glyph replacement (requires RE of generated code)
+
+## DLC dispatch investigation
+
+- `0x821671F0` is inside the guest `.pdata` section. Its pair
+  `(0x8266E508, 0x40001204)` is unwind metadata, not a class/method registration.
+- The earlier `CModule::makeCurrent` identification of `sub_8266E508` was
+  incorrect. Live `.rdata` inspection resolves the associated name at
+  `0x8200CEF8` to `{EndCaptureFileCreation}`. `sub_8266E5A8` builds eight
+  68-byte name/function records for capture commands and dispatches at
+  `0x8266E840`; it is not evidence of a missing DLC activation path.
+  Existing diagnostic labels `set-current` and `activation-gate` came from
+  that disproven interpretation and must not be used to diagnose DLC.
+- `--dlc_trace=true` enables bounded, read-only probes. The authoritative DLC
+  read probe is `DLC-IO-TRACE` in the SDK; older manifest probes include the
+  unrelated capture-command path. Default is off.
+- The playable-content reproduction in `dantes_inferno_199.log` issues reads
+  for `dia_core.dlm` and `dia_core_xen.dlm`, but not `dia_core.lu2`. The latter
+  contains `SetupEditorGameFlow()` registering the editor/arena episodes.
+  These reads do not hit the `sub_826AB7C0` probe, so that wrapper does not
+  cover this scan path. `DLC-IO-TRACE` in the SDK's `NtReadFile_entry` now
+  captures completion status, byte count, and guest stack links for up to 32
+  `.dlm`/`.lu2` reads under the same `--dlc_trace=true` flag. This diagnostic
+  is persisted in `patches/sdk/rexglue-sdk-v0.10.0.patch`.
+- `dantes_inferno_200.log` confirms successful `.dlm` reads (106 and 1462
+  bytes, status zero). The stack is `82507B58 -> 82505A58 -> 8250A1A0 ->
+  825065B8 -> 82505B38 -> 82509610 -> 825070D0 -> 826A7D50 -> NtReadFile`.
+- The live DLC manager at `*[0x82AF89A0]` has seven handlers at `manager+8`,
+  count at `manager+40`: `.rep`, `.add`, `.key`, `.ltx`, `.lua`, `.dlm`, `.lds`.
+  `sub_82284E18` registers them at `0x82286864..0x822868AC` through
+  `sub_825057A8`. No `.lu2` handler is registered. `sub_82298628` returns
+  `.lua` at `0x82124514`; its handler vtable is `0x8212C3A8`, with read
+  callback `sub_82509280` at slot +32.
+- The actual `.dlm` handler vtable is `0x8213F070`. Getter `sub_82507CA0`
+  returns `.dlm` at `0x8213EFD4`; read callback `sub_82507EF0` parses the
+  version header and file mappings. It does not register playable episodes.
+- The missing `.lu2` loading support is a verified mismatch with the installed
+  Saint Lucia package. A title-update comparison is the next investigation,
+  not yet proof of which update or additional engine changes are required.
+- `generated/default/codegen.partition.json` maps guest function starts to
+  recomp file numbers. Use it to locate functions in ignored generated files;
+  the nearest preceding start is only a candidate until the function body is read.
+- Guest-image dumping is separately opt-in with `--dlc_dump_image=true`.
+- After regenerating hooks, run `python patches/generated/apply_generated_patches.py`
+  before compiling the executable to retain the save-system fiber patches.
