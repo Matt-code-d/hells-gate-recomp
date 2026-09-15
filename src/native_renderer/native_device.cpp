@@ -24,6 +24,7 @@
 #include "Graphics/GraphicsEngine/interface/Sampler.h"
 #include "Graphics/GraphicsTools/interface/GraphicsUtilities.h"
 #include "Graphics/GraphicsAccessories/interface/GraphicsAccessories.hpp"
+#include "Primitives/interface/DebugOutput.h"
 
 #include <rex/logging/macros.h>
 
@@ -130,6 +131,18 @@ NativeDevice::~NativeDevice() {
 bool NativeDevice::initialize(void* hwnd, uint32_t width, uint32_t height) {
   shutdown();
 
+  Diligent::SetDebugMessageCallback(
+      [](Diligent::DEBUG_MESSAGE_SEVERITY severity, const char* message,
+         const char*, const char*, int) {
+        if (severity >= Diligent::DEBUG_MESSAGE_SEVERITY_ERROR) {
+          REXLOG_ERROR("Diligent: {}", message ? message : "");
+        } else if (severity == Diligent::DEBUG_MESSAGE_SEVERITY_WARNING) {
+          REXLOG_WARN("Diligent: {}", message ? message : "");
+        } else {
+          REXLOG_INFO("Diligent: {}", message ? message : "");
+        }
+      });
+
   impl_->factory = Diligent::GetEngineFactoryVk();
   if (!impl_->factory) {
     REXLOG_ERROR("NativeDevice: Failed to get Vulkan engine factory");
@@ -159,6 +172,9 @@ bool NativeDevice::initialize(void* hwnd, uint32_t width, uint32_t height) {
     width = uint32_t(client.right);
     height = uint32_t(client.bottom);
   }
+  REXLOG_INFO("NativeDevice: hwnd={} client={}x{} swapchain {}x{} visible={}",
+              fmt::ptr(hwnd), client.right, client.bottom, width, height,
+              hwnd ? IsWindowVisible(static_cast<HWND>(hwnd)) : false);
 #endif
 
   impl_->factory->CreateDeviceAndContextsVk(engine_ci, &impl_->device,

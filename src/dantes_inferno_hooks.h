@@ -29,12 +29,35 @@ inline void FiberRestoreContext(PPCContext& ctx, uint8_t* base) {
   if (g_setjmp_ctx_addr == 0) return;
   uint32_t addr = g_setjmp_ctx_addr;
   uint32_t phys_offset = (addr >= 0xE0000000u) ? 0x1000u : 0u;
-  uint8_t* ptr = base + addr + phys_offset;
-  ctx.r1.u64 = __builtin_bswap64(*reinterpret_cast<uint64_t*>(ptr + 144));
-  ctx.r31.u64 = __builtin_bswap64(*reinterpret_cast<uint64_t*>(ptr + 296));
+  const uint8_t* ptr = base + addr + phys_offset;
+  auto load64 = [&](uint32_t off) {
+    return __builtin_bswap64(*reinterpret_cast<const uint64_t*>(ptr + off));
+  };
+  auto load32 = [&](uint32_t off) {
+    return __builtin_bswap32(*reinterpret_cast<const uint32_t*>(ptr + off));
+  };
+  for (int i = 14; i <= 31; ++i) {
+    (&ctx.f0)[i].u64 = load64((i - 14) * 8);
+  }
+  ctx.r1.u64 = load64(144);
+  for (int i = 13; i <= 31; ++i) {
+    (&ctx.r3)[i].u64 = load64(152 + (i - 13) * 8);
+  }
+  uint32_t cr = load32(304);
+  for (int i = 0; i < 8; ++i) {
+    (&ctx.cr0)[i].set_raw((cr >> (28 - i * 4)) & 0xF);
+  }
+  ctx.lr = load32(308);
+  for (int i = 64; i <= 127; ++i) {
+    const uint8_t* src = ptr + 320 + (i - 64) * 16;
+    auto* dst = (&ctx.v0)[i].u8;
+    for (int b = 0; b < 16; ++b) {
+      dst[b] = src[15 - b];
+    }
+  }
   ctx.r3.u32 = g_longjmp_return_value;
-  REXLOG_INFO("FIBER: restored r1=0x{:08X} r31=0x{:08X} r3={}",
-              ctx.r1.u32, ctx.r31.u32, ctx.r3.s32);
+  REXLOG_INFO("FIBER: restored ctx from jmp_buf @{:08X} r1=0x{:08X} r3={}",
+              addr, ctx.r1.u32, ctx.r3.s32);
 }
 
 inline float g_ultrawide_target_aspect = 0.0f;

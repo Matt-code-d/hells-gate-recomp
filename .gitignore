@@ -128,3 +128,6 @@ tools/build_dante_diagnostic.ps1
 tools/run_cmake_test.py
 tools/extract-xiso/
 docs/HYBRID_RENDERER_PLAN.md
+
+# --- Agent docs (local only) ---
+AGENTS.md

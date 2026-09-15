@@ -9,6 +9,7 @@
 #include <rex/ui/imgui_dialog.h>
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/graphics_system.h>
+#include <rex/system/function_dispatcher.h>
 #include <rex/logging/macros.h>
 
 #include <array>
@@ -196,8 +197,10 @@ class DantesInfernoApp : public rex::ReXApp {
   void OnPreLaunchModule() override {
     uint8_t* membase = runtime()->memory()->virtual_membase();
 
-    auto* ptr = reinterpret_cast<uint32_t*>(membase + 0x82B101E4);
-    *ptr = 0u;
+    auto* dispatcher = runtime()->function_dispatcher();
+    const bool is_tu2 = dispatcher && dispatcher->GetFunction(0x82879110);
+    uint32_t slot = is_tu2 ? 0x82CE68E4u : 0x82B101E4u;
+    *reinterpret_cast<uint32_t*>(membase + slot) = 0u;
   }
 
   void OnPostSetup() override {
