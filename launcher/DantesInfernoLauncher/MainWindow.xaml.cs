@@ -566,6 +566,13 @@ namespace DantesInferno.Launcher
             }
 
             string exePath = PathHelper.GetGameExecutablePath(_installDir);
+            bool wantNative = DisplayOptions.NormalizeRenderer(_config.Renderer) == DisplayOptions.RendererNative;
+            if (wantNative)
+            {
+                string nativeExe = PathHelper.GetNativeGameExecutablePath(_installDir);
+                if (File.Exists(nativeExe))
+                    exePath = nativeExe;
+            }
             if (!File.Exists(exePath))
             {
                 MessageBox.Show("dantes_inferno.exe was not found in the install directory.", "Missing Game", MessageBoxButton.OK, MessageBoxImage.Error);

@@ -20,6 +20,11 @@ namespace DantesInferno
             return Path.Combine(installDirectory, "dantes_inferno.exe");
         }
 
+        public static string GetNativeGameExecutablePath(string installDirectory)
+        {
+            return Path.Combine(installDirectory, "dantes_inferno_native.exe");
+        }
+
         public static string GetGameConfigPath(string installDirectory)
         {
             return Path.Combine(installDirectory, "dantes_inferno.toml");
