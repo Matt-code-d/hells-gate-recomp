@@ -1,15 +1,12 @@
 diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
-index da8e432..ad4f295 100644
+index da8e432..f6028a4 100644
 --- a/include/rex/graphics/command_processor.h
 +++ b/include/rex/graphics/command_processor.h
-@@ -221,6 +221,13 @@ class CommandProcessor {
+@@ -221,6 +221,10 @@ class CommandProcessor {
                           IndexBufferInfo* index_buffer_info, bool major_mode_explicit) = 0;
    virtual bool IssueCopy() = 0;
  
-+  // Diagnostic: logs draws whose vertex fetches would read outside the fetch
-+  // constant's declared bounds. On Xenos, OOB vfetch words return 0; the
-+  // shared-memory loads in the translators return adjacent guest memory
-+  // instead, corrupting vertex data.
++  // Logs draws whose vertex fetches read outside the fetch constant's bounds.
 +  void TraceVertexFetchOOB(const Shader& vertex_shader, uint32_t index_count,
 +                           const IndexBufferInfo* index_buffer_info);
 +
@@ -31,7 +28,7 @@ index 96d362b..f83f172 100644
    explicit D3D12CommandProcessor(D3D12GraphicsSystem* graphics_system,
                                   system::KernelState* kernel_state);
 diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
-index 4d845c7..3d9c5ec 100644
+index 4d845c7..c6fb795 100644
 --- a/include/rex/graphics/d3d12/texture_cache.h
 +++ b/include/rex/graphics/d3d12/texture_cache.h
 @@ -114,7 +114,12 @@ class D3D12TextureCache final : public TextureCache {
@@ -48,7 +45,7 @@ index 4d845c7..3d9c5ec 100644
  
    // Returns whether the actual scale is not smaller than the requested one.
    static bool ClampDrawResolutionScaleToMaxSupported(uint32_t& scale_x, uint32_t& scale_y,
-@@ -179,6 +184,26 @@ class D3D12TextureCache final : public TextureCache {
+@@ -179,6 +184,22 @@ class D3D12TextureCache final : public TextureCache {
    void UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) override;
  
   private:
@@ -61,11 +58,7 @@ index 4d845c7..3d9c5ec 100644
 +  };
 +  std::vector<VP6TextureReadback> pending_vp6_readbacks_;
 +
-+  // CPU-mapped upload buffers for linear chroma planes. These must stay alive
-+  // until the GPU completes the CopyTextureRegion command that reads from them.
-+  // The local ComPtr would be destroyed when the function returns, but the
-+  // deferred command list hasn't been executed yet ├óÔéČÔÇŁ causing a use-after-free
-+  // crash in the GPU driver (0xC0000005 in nvwgf2umx.dll).
++  // CPU-mapped upload buffers kept alive until the GPU completes the copy.
 +  struct PendingLinearUpload {
 +    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
 +    uint64_t submission;
@@ -90,7 +83,7 @@ index 2cf24c4..3c4b107 100644
  REXCVAR_DECLARE(bool, gpu_debug_markers);
  bool IsGpuDebugMarkersEnabled();
 diff --git a/include/rex/graphics/pipeline/shader/dxbc_translator.h b/include/rex/graphics/pipeline/shader/dxbc_translator.h
-index 3b0fd61..336864d 100644
+index 3b0fd61..826044e 100644
 --- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
 +++ b/include/rex/graphics/pipeline/shader/dxbc_translator.h
 @@ -111,7 +111,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
@@ -102,21 +95,18 @@ index 3b0fd61..336864d 100644
  
      enum class DepthStencilMode : uint32_t {
        kNoModifiers,
-@@ -388,6 +388,13 @@ class DxbcShaderTranslator : public ShaderTranslator {
+@@ -388,6 +388,10 @@ class DxbcShaderTranslator : public ShaderTranslator {
      // The constant blend factor for the respective modes.
      float edram_blend_constant[4];
  
-+    // Integer num_format on fixed textures. Each dword packs the scale needed
-+    // to turn normalized host samples back into guest integer values.
-+    // bits 0:3 = component_bits - 1
-+    // bit 4 = signed
-+    // Zero means no scale.
++    // Integer num_format scale per texture. 5 bits per component:
++    // bits 0:3 = component_bits - 1, bit 4 = signed; 0 = no scale.
 +    uint32_t texture_integer_scale_bits[32];
 +
     private:
      friend class DxbcShaderTranslator;
  
-@@ -440,6 +447,8 @@ class DxbcShaderTranslator : public ShaderTranslator {
+@@ -440,6 +444,8 @@ class DxbcShaderTranslator : public ShaderTranslator {
  
        kEdramBlendConstant,
  
@@ -125,27 +115,69 @@ index 3b0fd61..336864d 100644
        kCount,
      };
      static_assert(uint32_t(Index::kCount) <= 64,
+diff --git a/include/rex/graphics/pipeline/shader/shader.h b/include/rex/graphics/pipeline/shader/shader.h
+index 4cf3854..b1ab9c0 100644
+--- a/include/rex/graphics/pipeline/shader/shader.h
++++ b/include/rex/graphics/pipeline/shader/shader.h
+@@ -793,6 +793,14 @@ class Shader {
+       host_disassembly_ = std::move(disassembly);
+     }
+ 
++    // Adopts a persisted translation result, bypassing the translator.
++    void AdoptCachedResult(const void* binary, size_t binary_size, bool valid) {
++      const uint8_t* binary_bytes = static_cast<const uint8_t*>(binary);
++      translated_binary_.assign(binary_bytes, binary_bytes + binary_size);
++      is_translated_ = true;
++      is_valid_ = valid;
++    }
++
+     // For dumping after translation. Dumps the shader's translated code, and,
+     // if available, translated disassembly, to files in the given directory
+     // based on ucode hash. Returns {binary path, disassembly path if written}.
+diff --git a/include/rex/graphics/pipeline/shader/spirv.h b/include/rex/graphics/pipeline/shader/spirv.h
+index dd90ef7..0fe8a70 100644
+--- a/include/rex/graphics/pipeline/shader/spirv.h
++++ b/include/rex/graphics/pipeline/shader/spirv.h
+@@ -58,6 +58,22 @@ class SpirvShader : public Shader {
+     return sampler_bindings_;
+   }
+ 
++  // Restores bindings captured by a previous translation (SPIR-V cache hit).
++  void SetCachedBindings(const TextureBinding* new_texture_bindings,
++                         size_t texture_binding_count,
++                         const SamplerBinding* new_sampler_bindings,
++                         size_t sampler_binding_count,
++                         uint32_t new_used_texture_mask) {
++    if (bindings_setup_entered_.test_and_set(std::memory_order_relaxed)) {
++      return;
++    }
++    texture_bindings_.assign(new_texture_bindings,
++                             new_texture_bindings + texture_binding_count);
++    sampler_bindings_.assign(new_sampler_bindings,
++                             new_sampler_bindings + sampler_binding_count);
++    used_texture_mask_ = new_used_texture_mask;
++  }
++
+  protected:
+   Translation* CreateTranslationInstance(uint64_t modification) override;
+ 
 diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
-index d26cd4f..1ea5d91 100644
+index d26cd4f..f89e54e 100644
 --- a/include/rex/graphics/pipeline/texture/cache.h
 +++ b/include/rex/graphics/pipeline/texture/cache.h
-@@ -91,6 +91,15 @@ class TextureCache {
+@@ -91,6 +91,11 @@ class TextureCache {
  
    static uint32_t GuestToHostSwizzle(uint32_t guest_swizzle, uint32_t host_format_swizzle);
  
-+  // Packs the integer scale the fetch shader reads from the system constant to
-+  // undo the host sampler's normalization - the guest wants e.g. [0, 255], not
-+  // [0, 1]. 5 bits per output component: bits 0:3 = width - 1, bit 4 = signed.
-+  // The scale lands after swizzling, so each output lane walks the host swizzle
-+  // back to its source component's width; constant (0/1) lanes, gamma, and
-+  // non-fixed formats have nothing to rescale and stay 0.
++  // Per-component integer scale undoing host normalization, applied after
++  // swizzling. 5 bits each: bits 0:3 = width - 1, bit 4 = signed; 0 = no scale.
 +  static uint32_t GetIntegerScaleBits(xenos::TextureFormat guest_format, uint32_t num_format,
 +                                      uint32_t host_swizzle, uint8_t swizzled_signs);
 +
    void TextureFetchConstantWritten(uint32_t index) { TextureFetchConstantsWritten(index, index); }
    void TextureFetchConstantsWritten(uint32_t first_index, uint32_t last_index) {
      if (first_index > last_index) {
-@@ -121,6 +130,10 @@ class TextureCache {
+@@ -121,6 +126,10 @@ class TextureCache {
      const TextureBinding* binding = GetValidTextureBinding(fetch_constant_index);
      return binding ? binding->swizzled_signs : kSwizzledSignsUnsigned;
    }
@@ -156,7 +188,7 @@ index d26cd4f..1ea5d91 100644
    bool IsActiveTextureResolutionScaled(uint32_t fetch_constant_index) const {
      const TextureBinding* binding = GetValidTextureBinding(fetch_constant_index);
      if (!binding) {
-@@ -452,6 +465,9 @@ class TextureCache {
+@@ -452,6 +461,9 @@ class TextureCache {
  
    struct TextureBinding {
      TextureKey key;
@@ -185,32 +217,74 @@ index b7f66e2..f3cb5e6 100644
    uint32_t bytes_per_block() const { return block_width * block_height * bits_per_pixel / 8; }
  
 diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
-index 4d85a2b..05bf413 100644
+index 4d85a2b..2f5c8cf 100644
 --- a/include/rex/graphics/shared_memory.h
 +++ b/include/rex/graphics/shared_memory.h
-@@ -79,6 +79,11 @@ class SharedMemory {
+@@ -79,6 +79,9 @@ class SharedMemory {
    bool RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, size_t count);
    bool RequestRange(uint32_t start, uint32_t length);
  
-+  // Returns whether every page in the range is currently valid in the host GPU
-+  // memory copy. Hold the global critical region if relying on this for state
-+  // transitions such as watch installation.
++  // Whether every page in the range is valid in the host GPU memory copy.
 +  bool IsRangeValid(uint32_t start, uint32_t length) const;
 +
    // Marks the range and, if not exact_range, potentially its surroundings
    // (to up to the first GPU-written page, as an access violation exception
    // count optimization) as modified by the CPU, also invalidating GPU-written
-@@ -95,6 +100,10 @@ class SharedMemory {
+@@ -95,6 +98,9 @@ class SharedMemory {
    // regions in those pages.
    void RangeWrittenByGpu(uint32_t start, uint32_t length);
  
-+  // Read-only view of guest physical memory, for diagnostics/inspection.
-+  // Contents are big-endian, as written by the guest.
++  // Read-only view of guest physical memory (big-endian), for diagnostics.
 +  const uint8_t* TranslatePhysicalForDebug(uint32_t guest_address) const;
 +
   protected:
    SharedMemory(memory::Memory& memory);
    // Call in implementation-specific initialization.
+diff --git a/include/rex/graphics/vulkan/pipeline_cache.h b/include/rex/graphics/vulkan/pipeline_cache.h
+index 7b938b9..fd1b380 100644
+--- a/include/rex/graphics/vulkan/pipeline_cache.h
++++ b/include/rex/graphics/vulkan/pipeline_cache.h
+@@ -444,6 +444,40 @@ class VulkanPipelineCache {
+   FILE* pipeline_storage_file_ = nullptr;
+   bool pipeline_storage_file_flush_needed_ = false;
+ 
++  // Persistent SPIR-V cache (.vkspv), keyed by (ucode hash, modification).
++  // Fingerprinted against translator/device config; stale files regenerate.
++  struct SpvCacheKey {
++    uint64_t ucode_hash;
++    uint64_t modification;
++    bool operator==(const SpvCacheKey& other) const {
++      return ucode_hash == other.ucode_hash &&
++             modification == other.modification;
++    }
++    struct Hasher {
++      size_t operator()(const SpvCacheKey& key) const {
++        return key.ucode_hash ^
++               std::hash<uint64_t>()(key.modification * 0x9E3779B97F4A7C15ull);
++      }
++    };
++  };
++  struct SpvCacheEntry {
++    bool is_valid;
++    std::vector<uint8_t> spirv;
++    std::vector<VulkanShader::TextureBinding> texture_bindings;
++    std::vector<VulkanShader::SamplerBinding> sampler_bindings;
++    uint32_t used_texture_mask;
++  };
++  bool TryLoadCachedSpirvTranslation(
++      VulkanShader::VulkanTranslation& translation);
++  void QueueCachedSpirvTranslationWrite(
++      const VulkanShader::VulkanTranslation& translation);
++  std::unordered_map<SpvCacheKey, SpvCacheEntry, SpvCacheKey::Hasher>
++      spv_cache_;
++  std::mutex spv_cache_mutex_;
++  FILE* spv_storage_file_ = nullptr;
++  // Serialized records pending a write on the storage thread.
++  std::deque<std::vector<uint8_t>> storage_write_spv_queue_;
++
+   // Thread for asynchronous writing to the storage streams.
+   void StorageWriteThread();
+   std::mutex storage_write_request_lock_;
 diff --git a/include/rex/system/mmio_handler.h b/include/rex/system/mmio_handler.h
 index 7ae42a8..e51caf7 100644
 --- a/include/rex/system/mmio_handler.h
@@ -254,7 +328,7 @@ index 83d09f7..be3e231 100644
    // refresher ones (for writing to them via the guest_output_resources_
    // references) and the paint one (for presenting it via the
 diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
-index afb4a30..1054b05 100644
+index afb4a30..18aea5a 100644
 --- a/include/rex/ui/presenter.h
 +++ b/include/rex/ui/presenter.h
 @@ -101,6 +101,8 @@ class AppUIDrawContext : public UIDrawContext {
@@ -266,14 +340,12 @@ index afb4a30..1054b05 100644
    uint32_t width = 0;
    uint32_t height = 0;
    size_t stride = 0;
-@@ -358,10 +360,26 @@ class Presenter {
+@@ -358,10 +360,24 @@ class Presenter {
    bool RefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuffer_height,
                            uint32_t display_aspect_ratio_x, uint32_t display_aspect_ratio_y,
                            std::function<bool(GuestOutputRefreshContext& context)> refresher);
 +
-+  // Total number of guest frames produced (incremented on each successful
-+  // RefreshGuestOutput call). Can be read from any thread to compute the
-+  // actual game frame rate.
++  // Total guest frames produced; thread-safe, for FPS calculation.
 +  uint64_t guest_frame_count() const { return guest_frame_count_.load(std::memory_order_relaxed); }
    // The implementation must be callable from any thread, including from
    // multiple at the same time, and it should acquire the latest guest output
@@ -293,11 +365,10 @@ index afb4a30..1054b05 100644
    const GuestOutputPaintConfig& GetGuestOutputPaintConfigFromUIThread() const {
      return guest_output_paint_config_;
    }
-@@ -977,6 +995,9 @@ class Presenter {
+@@ -977,6 +993,8 @@ class Presenter {
    // rather than being blank.
    bool guest_output_active_last_refresh_ = false;
  
-+  // Total count of successful guest output refreshes (actual game frames).
 +  std::atomic<uint64_t> guest_frame_count_{0};
 +
    // Ordered by the Z order, and then by the time of addition.
@@ -320,7 +391,7 @@ index 68274d2..d1f7cdd 100644
  #include <cassert>
  #include <csetjmp>
 diff --git a/src/codegen/analyze.cpp b/src/codegen/analyze.cpp
-index c5f3d14..af8592f 100644
+index c5f3d14..8da9084 100644
 --- a/src/codegen/analyze.cpp
 +++ b/src/codegen/analyze.cpp
 @@ -20,6 +20,7 @@
@@ -331,17 +402,13 @@ index c5f3d14..af8592f 100644
  
  namespace rex::codegen {
  
-@@ -54,9 +55,11 @@ Result<void> Analyze(CodegenContext& ctx, ProgressReporter* reporter) {
+@@ -54,9 +55,7 @@ Result<void> Analyze(CodegenContext& ctx, ProgressReporter* reporter) {
      return discoverResult;
    }
  
 -  // 3.5. Function pointer scan: find lis/addi pairs loading code addresses
 -  // TODO(tomc): disabled for now, causes too many false positives
 -  // functionPointerScan(ctx);
-+  // 3.5. Data section function pointer scan: find dwords in non-executable
-+  // sections that point into executable sections (vtables, callback tables,
-+  // raw function pointer arrays). The RTTI vtable scanner only finds C++
-+  // vtables with Complete Object Locators; this catches the rest.
 +  dataSectionFunctionPointerScan(ctx);
  
    // 4. Gap fill uncovered regions + discover blocks for gap-filled functions + cleanup
@@ -369,20 +436,14 @@ index 24894f2..fe9f462 100644
  bool build_vmaxfp(BuilderContext& ctx);
  bool build_vminfp(BuilderContext& ctx);
 diff --git a/src/codegen/builders/memory.cpp b/src/codegen/builders/memory.cpp
-index 3dd7fa5..165711f 100644
+index 3dd7fa5..54c283e 100644
 --- a/src/codegen/builders/memory.cpp
 +++ b/src/codegen/builders/memory.cpp
-@@ -553,6 +553,56 @@ bool build_lvx(BuilderContext& ctx) {
+@@ -553,6 +553,36 @@ bool build_lvx(BuilderContext& ctx) {
    return true;
  }
  
 +bool build_lvebx(BuilderContext& ctx) {
-+  // lvebx: Load Vector Element Byte Indexed
-+  // Loads a single byte into one element of vD, leaving other elements unchanged.
-+  // The element is selected by bits 28-31 of the effective address (which byte within
-+  // the 16-byte block). On PPC (big-endian), element 0 is at the lowest address.
-+  // On the host (little-endian), element 0 is at the highest address, so we reverse
-+  // the index: host_element = 15 - (ea & 0xF).
 +  emitVectorEA(ctx);
 +  ctx.println(
 +      "\t{{ uint8_t _lvebx_b = REX_LOAD_U8({});"
@@ -393,13 +454,6 @@ index 3dd7fa5..165711f 100644
 +}
 +
 +bool build_lvehx(BuilderContext& ctx) {
-+  // lvehx: Load Vector Element Halfword Indexed
-+  // Loads a single 16-bit halfword into one element of vD, leaving other elements
-+  // unchanged. The element is selected by bits 27-31 of the effective address (which
-+  // halfword within the 16-byte block). On PPC (big-endian), element 0 is at the
-+  // lowest address. On the host (little-endian), element 0 is at the highest address,
-+  // so we reverse the index: host_element = 7 - ((ea & 0xF) >> 1).
-+  // The loaded halfword is byte-swapped from big-endian to host-endian via REX_LOAD_U16.
 +  emitVectorEA(ctx, "0x1");
 +  ctx.println(
 +      "\t{{ uint16_t _lvehx_h = REX_LOAD_U16({});"
@@ -410,13 +464,6 @@ index 3dd7fa5..165711f 100644
 +}
 +
 +bool build_lvewx(BuilderContext& ctx) {
-+  // lvewx: Load Vector Element Word Indexed
-+  // Loads a single 32-bit word into one element of vD, leaving other elements unchanged.
-+  // The element is selected by bits 28-31 of the effective address (which word within the
-+  // 16-byte aligned block). On PPC (big-endian), element 0 is at the lowest address.
-+  // On the host (little-endian SSE), element 0 is at the highest address, so we reverse
-+  // the index: host_element = 3 - (ea & 0xC) >> 2.
-+  // The loaded word is byte-swapped from big-endian to host-endian via REX_LOAD_U32.
 +  emitVectorEA(ctx, "0x3");
 +  ctx.println(
 +      "\t{{ uint32_t _lvewx_w = REX_LOAD_U32({});"
@@ -430,38 +477,65 @@ index 3dd7fa5..165711f 100644
    emitVectorTempEA(ctx);
    ctx.println(
 diff --git a/src/codegen/builders/vector.cpp b/src/codegen/builders/vector.cpp
-index cbdd7f7..ae7925f 100644
+index cbdd7f7..398b9ec 100644
 --- a/src/codegen/builders/vector.cpp
 +++ b/src/codegen/builders/vector.cpp
-@@ -32,13 +32,17 @@ namespace rex::codegen {
- //
- // === Dot Product Masks (simde_mm_dp_ps) ===
- // The mask byte controls which elements participate in the dot product and
+@@ -24,49 +24,7 @@
+ 
+ namespace rex::codegen {
+ 
+-//=============================================================================
+-// SIMD Constants Documentation
+-//=============================================================================
+-// This file uses several magic constants from Intel SSE/SSE4 intrinsics.
+-// Here are the key constants and their meanings:
+-//
+-// === Dot Product Masks (simde_mm_dp_ps) ===
+-// The mask byte controls which elements participate in the dot product and
 -// where the result is broadcast. Format: 0bAAAABBBB
 -//   High nibble (AAAA): Which source elements to multiply (bit 7=x, 6=y, 5=z, 4=w)
 -//   Low nibble (BBBB):  Which destination elements receive the result
-+// where the result is broadcast. Format: 0bSSSSDDDD
-+//   High nibble (SSSS): Source/sum mask ├óÔéČÔÇŁ bit (i+4) selects host element i
-+//     bit 4 ├óÔÇáÔÇÖ host elem 0, bit 5 ├óÔÇáÔÇÖ host elem 1,
-+//     bit 6 ├óÔÇáÔÇÖ host elem 2, bit 7 ├óÔÇáÔÇÖ host elem 3
-+//   Low nibble (DDDD):  Destination/broadcast mask ├óÔéČÔÇŁ bit i selects host element i
- //
+-//
 -// 0xEF = 0b11101111: Dot product of elements y,z,w (bits 765 set), result to all (bits 3210 set)
 -//        This computes dot(yzw) due to guest->host vector element reversal.
-+// 0xEF = 0b11101111: Sum host elements 1,2,3 (exclude host elem 0), broadcast to all
-+//        In byte-reversed convention: sums PPC elements 0,1,2 (excludes PPC elem 3 = W)
-+//        Used for vmsum3fp128 (3-element dot product).
- // 0xFF = 0b11111111: Full 4-element dot product, result broadcast to all elements
-+//        Used for vmsum4fp128.
- //
- // === Floating-Point Sign Bit ===
- // 0x80000000: IEEE 754 sign bit mask for 32-bit float
-@@ -91,6 +95,20 @@ bool build_vmulfp128(BuilderContext& ctx) {
+-// 0xFF = 0b11111111: Full 4-element dot product, result broadcast to all elements
+-//
+-// === Floating-Point Sign Bit ===
+-// 0x80000000: IEEE 754 sign bit mask for 32-bit float
+-//             Used for negation via XOR and sign extraction
+-//
+-// === IEEE 754 Single Precision Exponent ===
+-// 0x7f800000: Exponent field mask (bits 23-30) for float
+-// 0x7FFFFFFF: Magnitude mask (clears sign bit)
+-// 0x3F800000: IEEE 754 representation of 1.0f (used for OR-ing in exponent)
+-// 0x40400000: IEEE 754 representation of 3.0f (D3D NORMSHORT encoding bias)
+-//
+-// === Half-Float (FP16) Conversion ===
+-// 0x7C00: FP16 exponent mask
+-// 0x1C000: Exponent bias adjustment for FP16->FP32 conversion
+-// 0x8000: FP16 sign bit
+-// 0x03FF: FP16 mantissa mask
+-// 0x7FFF: FP16 positive infinity/max value
+-//
+-// === Packed Integer Masks ===
+-// 0x3FF: 10-bit mask for NORMPACKED32 format (10 bits per component)
+-// 0xFFFFF: 20-bit mask for NORMPACKED64 format
+-// 0x1F: 5-bit mask for shift amounts (shifts are mod 32)
+-// 0xFF: 8-bit mask for byte values
+-// 0xFFFF: 16-bit mask for halfword values
+-//
+-// === D3D Color Format ===
+-// 0x404000FF: D3D color packing constant (ARGB8888)
+-//=============================================================================
++
+ 
+ //=============================================================================
+ // Vector Floating Point Arithmetic
+@@ -91,6 +49,18 @@ bool build_vmulfp128(BuilderContext& ctx) {
  }
  
  bool build_vmaddfp(BuilderContext& ctx) {
-+  // PPC vmaddfp vD, vA, vC, vB: vD = vA * vC + vB
-+  // Disassembler operand order: operands[0]=vD, [1]=vA, [2]=vC, [3]=vB
++  // vD = vA * vC + vB
 +  ctx.emit_set_flush_mode(true);
 +  ctx.println(
 +      "\tsimde_mm_store_ps({}.f32, simde_mm_add_ps(simde_mm_mul_ps(simde_mm_load_ps({}.f32), "
@@ -472,75 +546,52 @@ index cbdd7f7..ae7925f 100644
 +}
 +
 +bool build_vmaddcfp128(BuilderContext& ctx) {
-+  // vmaddcfp128: C variant - operand order {VD, VA, VS, VB}
-+  // vD = vA * vS + vB, where operands[2]=vS, operands[3]=vB
++  // vD = vA * vS + vB
    ctx.emit_set_flush_mode(true);
    ctx.println(
        "\tsimde_mm_store_ps({}.f32, simde_mm_add_ps(simde_mm_mul_ps(simde_mm_load_ps({}.f32), "
-@@ -101,7 +119,8 @@ bool build_vmaddfp(BuilderContext& ctx) {
+@@ -101,7 +71,7 @@ bool build_vmaddfp(BuilderContext& ctx) {
  }
  
  bool build_vnmsubfp(BuilderContext& ctx) {
 -  // vnmsubfp: vD = -(vA * vB - vC) - negation done by XOR with sign bit (0x80000000)
-+  // PPC vnmsubfp vD, vA, vC, vB: vD = -(vA * vC - vB)
-+  // Disassembler operand order: operands[0]=vD, [1]=vA, [2]=vC, [3]=vB
++  // vD = -(vA * vC - vB)
    ctx.emit_set_flush_mode(true);
    ctx.println(
        "\tsimde_mm_store_ps({}.f32, "
-@@ -184,8 +203,30 @@ bool build_vlogefp(BuilderContext& ctx) {
+@@ -184,8 +154,8 @@ bool build_vlogefp(BuilderContext& ctx) {
  //=============================================================================
  
  bool build_vmsum3fp128(BuilderContext& ctx) {
 -  // 3-element dot product accounting for guest->host vector element reversal
 -  // 0xEF = dot(yzw) with result broadcast to all elements (see constants doc)
-+  // 3-element dot product (PPC elements 0, 1, 2 ├óÔéČÔÇŁ excludes element 3).
-+  // In the byte-reversed host convention:
-+  //   PPC element 0 = host element 3
-+  //   PPC element 1 = host element 2
-+  //   PPC element 2 = host element 1
-+  //   PPC element 3 = host element 0
-+  // So dot(PPC[0], PPC[1], PPC[2]) = dot(host[3], host[2], host[1]).
-+  //
-+  // SSE _mm_dp_ps imm8 layout (per Intel SDM and SIMDE implementation):
-+  //   bits [7:4] = source/sum mask: bit (i+4) selects host element i
-+  //     bit 4 ├óÔÇáÔÇÖ host elem 0, bit 5 ├óÔÇáÔÇÖ host elem 1,
-+  //     bit 6 ├óÔÇáÔÇÖ host elem 2, bit 7 ├óÔÇáÔÇÖ host elem 3
-+  //   bits [3:0] = destination/broadcast mask: bit i selects host element i
-+  //
-+  // To sum host elements 1,2,3 (PPC 2,1,0) and exclude host element 0 (PPC 3):
-+  //   sum bits [7:4] = 1110 = 0xE (bit4=0 excludes host elem 0 = PPC elem 3)
-+  //   dest bits [3:0] = 1111 = 0xF (broadcast to all 4 lanes)
-+  //   Correct mask: 0xEF
-+  //
-+  // NOTE: A previous "fix" changed this from 0xEF to 0x7F, incorrectly
-+  // believing [3:0] was the sum mask and [7:4] was the broadcast mask.
-+  // 0x7F sums host elements 0,1,2 (PPC 3,2,1) and EXCLUDES host element 3
-+  // (PPC element 0 = X component), breaking 3-element dot products in
-+  // physics/collision code. Reverted to 0xEF after ppc_tests failure.
++  // dp_ps 0xEF: sums host elements 1-3 (PPC elements 0-2 in the byte-reversed
++  // layout, excluding W), broadcasts to all lanes.
    ctx.emit_set_flush_mode(true);
    ctx.println(
        "\tsimde_mm_store_ps({}.f32, simde_mm_dp_ps(simde_mm_load_ps({}.f32), "
-@@ -867,6 +908,10 @@ bool build_vslb(BuilderContext& ctx) {
+@@ -195,7 +165,6 @@ bool build_vmsum3fp128(BuilderContext& ctx) {
+ }
+ 
+ bool build_vmsum4fp128(BuilderContext& ctx) {
+-  // 4-element dot product: 0xFF = all 4 elements, result to all (see constants doc)
+   ctx.emit_set_flush_mode(true);
+   ctx.println(
+       "\tsimde_mm_store_ps({}.f32, simde_mm_dp_ps(simde_mm_load_ps({}.f32), "
+@@ -867,6 +836,8 @@ bool build_vslb(BuilderContext& ctx) {
  }
  
  bool build_vsldoi(BuilderContext& ctx) {
-+  // vsldoi vD, vA, vB, SH: concatenate vA || vB, shift left by SH bytes, take
-+  // the low 16 bytes. alignr_epi8(a, b, imm) concatenates [b || a] and right-
-+  // shifts by imm, so alignr_epi8(vA, vB, 16-SH) gives us [vB || vA] >> (16-SH)
-+  // which correctly maps to the byte-reversed host representation.
++  // alignr_epi8(vA, vB, 16-SH) = [vB||vA] >> (16-SH), matching the
++  // byte-reversed layout.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.u8, "
        "simde_mm_alignr_epi8(simde_mm_load_si128((simde__m128i*){}.u8), "
-@@ -1074,96 +1119,116 @@ bool build_vspltw(BuilderContext& ctx) {
+@@ -1074,96 +1045,96 @@ bool build_vspltw(BuilderContext& ctx) {
  //=============================================================================
  
  bool build_vpkshus(BuilderContext& ctx) {
-+  // vpkshus vD, vA, vB: pack all 8 signed halfwords of vA ├óÔÇáÔÇÖ unsigned bytes
-+  // [0..7], all 8 of vB ├óÔÇáÔÇÖ unsigned bytes [8..15], unsigned saturate.
-+  // x86 packus_epi16(a,b): a[0..7]├óÔÇáÔÇÖresult[0..7], b[0..7]├óÔÇáÔÇÖresult[8..15].
-+  // With byte reversal: PPC vA hw[i] = host vA hw[7-i].
-+  // PPC result stored reversed: host[0..7] = PPC[8..15] = sat(vB),
-+  // host[8..15] = PPC[0..7] = sat(vA). So packus(vB, vA).
++  // Operands swapped for the byte-reversed layout.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.u8, "
 -      "simde_mm_packus_epi16(simde_mm_load_si128((simde__m128i*){}.s16), "
@@ -555,8 +606,6 @@ index cbdd7f7..ae7925f 100644
  
  bool build_vpkuhum(BuilderContext& ctx) {
 -  // Vector Pack Unsigned Halfword Unsigned Modulo - pack low 8 bits from each halfword
-+  // Vector Pack Unsigned Halfword Unsigned Modulo - pack all 8 halfwords
-+  // Mask to 0xFF for modulo, then packus (values 0-255 are positive in s16).
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.u8, "
 -      "simde_mm_packus_epi16(simde_mm_and_si128(simde_mm_load_si128((simde__m128i*){}.u16), "
@@ -572,7 +621,7 @@ index cbdd7f7..ae7925f 100644
  }
  
  bool build_vpkuhus(BuilderContext& ctx) {
-   // Vector Pack Unsigned Halfword Unsigned Saturate
+-  // Vector Pack Unsigned Halfword Unsigned Saturate
 -  // NOTE(tomc): _mm_packus_epi16 treats inputs as signed, so we need custom saturation for
 -  // unsigned. Unsigned halfwords >= 0x8000 would be interpreted as negative and clamped to 0
 -  // instead of 0xFF.
@@ -584,10 +633,7 @@ index cbdd7f7..ae7925f 100644
 -                ctx.v(ctx.insn.operands[0]), 7 - i, ctx.v(ctx.insn.operands[2]), 7 - i,
 -                ctx.v(ctx.insn.operands[2]), 7 - i);
 -  }
-+  // Use min_epu16 to clamp to 0xFF, then packus_epi16 (handles [0,0xFF] correctly).
-+  // SSE intrinsics avoid the in-place aliasing bug that the element-by-element
-+  // approach has when the destination register overlaps a source register.
-+  // Swap operands for byte reversal (packus puts first arg in low bytes).
++  // Intrinsics instead of per-element loops: dest may alias a source register.
 +  ctx.println(
 +      "\tsimde_mm_store_si128((simde__m128i*){}.u8, "
 +      "simde_mm_packus_epi16("
@@ -600,8 +646,6 @@ index cbdd7f7..ae7925f 100644
  
  bool build_vpkuwum(BuilderContext& ctx) {
 -  // Vector Pack Unsigned Word Unsigned Modulo - pack low 16 bits from each word
-+  // Vector Pack Unsigned Word Unsigned Modulo - pack all 4 words
-+  // Mask to 0xFFFF for modulo, then packus (values 0-65535 are positive in s32).
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.u16, "
 -      "simde_mm_packus_epi32(simde_mm_and_si128(simde_mm_load_si128((simde__m128i*){}.u32), "
@@ -618,7 +662,7 @@ index cbdd7f7..ae7925f 100644
  }
  
  bool build_vpkuwus(BuilderContext& ctx) {
-   // Vector Pack Unsigned Word Unsigned Saturate
+-  // Vector Pack Unsigned Word Unsigned Saturate
 -
 -  // NOTE(tomc): _mm_packus_epi32 treats inputs as signed, so we need custom saturation for unsigned
 -  // Saturate each u32 to [0, 0xFFFF], then pack to u16
@@ -630,10 +674,7 @@ index cbdd7f7..ae7925f 100644
 -                ctx.v(ctx.insn.operands[0]), 3 - i, ctx.v(ctx.insn.operands[2]), 3 - i,
 -                ctx.v(ctx.insn.operands[2]), 3 - i);
 -  }
-+  // Use min_epu32 to clamp to 0xFFFF, then packus_epi32 (handles [0,0xFFFF] correctly).
-+  // SSE intrinsics avoid the in-place aliasing bug that the element-by-element
-+  // approach has when the destination register overlaps a source register.
-+  // Swap operands for byte reversal (packus puts first arg in low bytes).
++  // Intrinsics instead of per-element loops: dest may alias a source register.
 +  ctx.println(
 +      "\tsimde_mm_store_si128((simde__m128i*){}.u16, "
 +      "simde_mm_packus_epi32("
@@ -646,8 +687,7 @@ index cbdd7f7..ae7925f 100644
  
  bool build_vpkshss(BuilderContext& ctx) {
 -  // Vector Pack Signed Halfword Signed Saturate
-+  // Vector Pack Signed Halfword Signed Saturate - pack all 8 halfwords
-+  // packs_epi16(a,b): a├óÔÇáÔÇÖ[0..7], b├óÔÇáÔÇÖ[8..15]. Swap for byte reversal.
++  // Operands swapped for the byte-reversed layout.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.s8, "
 -      "simde_mm_packs_epi16(simde_mm_load_si128((simde__m128i*){}.s16), "
@@ -662,8 +702,7 @@ index cbdd7f7..ae7925f 100644
  
  bool build_vpkswss(BuilderContext& ctx) {
 -  // Vector Pack Signed Word Signed Saturate
-+  // Vector Pack Signed Word Signed Saturate - pack all 4 words
-+  // packs_epi32(a,b): a├óÔÇáÔÇÖ[0..3], b├óÔÇáÔÇÖ[4..7]. Swap for byte reversal.
++  // Operands swapped for the byte-reversed layout.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.s16, "
 -      "simde_mm_packs_epi32(simde_mm_load_si128((simde__m128i*){}.s32), "
@@ -678,8 +717,7 @@ index cbdd7f7..ae7925f 100644
  
  bool build_vpkswus(BuilderContext& ctx) {
 -  // Vector Pack Signed Word Unsigned Saturate
-+  // Vector Pack Signed Word Unsigned Saturate - pack all 4 words
-+  // packus_epi32(a,b): a├óÔÇáÔÇÖ[0..3], b├óÔÇáÔÇÖ[4..7]. Swap for byte reversal.
++  // Operands swapped for the byte-reversed layout.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.u16, "
 -      "simde_mm_packus_epi32(simde_mm_load_si128((simde__m128i*){}.s32), "
@@ -692,36 +730,27 @@ index cbdd7f7..ae7925f 100644
    return true;
  }
  
-@@ -1526,6 +1591,10 @@ bool build_vupkd3d128(BuilderContext& ctx) {
+@@ -1526,6 +1497,7 @@ bool build_vupkd3d128(BuilderContext& ctx) {
  }
  
  bool build_vupkhsb(BuilderContext& ctx) {
-+  // vupkhsb: Unpack HIGH guest bytes (0-7) to signed 16-bit.
-+  // In ReXGlue's byte-reversed host format, guest bytes 0-7 are at host
-+  // indices 15..8 (the HIGH 8 bytes). We use unpackhi_epi64 to extract them,
-+  // then cvtepi8_epi16 to sign-extend.
++  // Byte-reversed layout: guest bytes 0-7 sit at host indices 15-8.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.s16, "
        "simde_mm_cvtepi8_epi16(simde_mm_unpackhi_epi64(simde_mm_load_si128((simde__m128i*){}.s8), "
-@@ -1535,6 +1604,10 @@ bool build_vupkhsb(BuilderContext& ctx) {
+@@ -1535,6 +1507,7 @@ bool build_vupkhsb(BuilderContext& ctx) {
  }
  
  bool build_vupkhsh(BuilderContext& ctx) {
-+  // vupkhsh: Unpack HIGH guest halfwords (0-3) to signed 32-bit.
-+  // In byte-reversed host format, guest halfwords 0-3 are at host indices
-+  // 7..4 (the HIGH 4 halfwords). We use unpackhi_epi64 to extract them, then
-+  // cvtepi16_epi32 to sign-extend.
++  // Byte-reversed layout: guest halfwords 0-3 sit at host indices 7-4.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.s32, "
        "simde_mm_cvtepi16_epi32(simde_mm_unpackhi_epi64(simde_mm_load_si128((simde__m128i*){}.s16), "
-@@ -1544,14 +1617,22 @@ bool build_vupkhsh(BuilderContext& ctx) {
+@@ -1544,14 +1517,16 @@ bool build_vupkhsh(BuilderContext& ctx) {
  }
  
  bool build_vupklsb(BuilderContext& ctx) {
-+  // vupklsb: Unpack LOW guest bytes (8-15) to signed 16-bit.
-+  // In byte-reversed host format, guest bytes 8-15 are at host indices 7..0
-+  // (the LOW 8 bytes). cvtepi8_epi16 sign-extends the LOW 8 bytes of the
-+  // source, which is exactly what we need.
++  // Byte-reversed layout: guest bytes 8-15 sit at host indices 7-0.
    ctx.println(
 -      "\tsimde_mm_store_si128((simde__m128i*){}.s32, "
 -      "simde_mm_cvtepi8_epi16(simde_mm_load_si128((simde__m128i*){}.s16)));",
@@ -732,28 +761,23 @@ index cbdd7f7..ae7925f 100644
  }
  
  bool build_vupklsh(BuilderContext& ctx) {
-+  // vupklsh: Unpack LOW guest halfwords (4-7) to signed 32-bit.
-+  // In byte-reversed host format, guest halfwords 4-7 are at host indices
-+  // 3..0 (the LOW 4 halfwords). cvtepi16_epi32 sign-extends the LOW 4
-+  // halfwords.
++  // Byte-reversed layout: guest halfwords 4-7 sit at host indices 3-0.
    ctx.println(
        "\tsimde_mm_store_si128((simde__m128i*){}.s32, "
        "simde_mm_cvtepi16_epi32(simde_mm_load_si128((simde__m128i*){}.s16)));",
 diff --git a/src/codegen/instruction_dispatch.cpp b/src/codegen/instruction_dispatch.cpp
-index 40ae269..3c12f21 100644
+index 40ae269..c58b771 100644
 --- a/src/codegen/instruction_dispatch.cpp
 +++ b/src/codegen/instruction_dispatch.cpp
-@@ -290,6 +290,9 @@ static const std::unordered_map<int, Builder>& GetDispatchTable() {
+@@ -290,6 +290,7 @@ static const std::unordered_map<int, Builder>& GetDispatchTable() {
        {PPC_INST_LVRX128, build_lvrx},
        {PPC_INST_LVSL, build_lvsl},
        {PPC_INST_LVSR, build_lvsr},
-+      // Xenia treats lvebx/lvehx/lvewx as "Same as lvx" (full 128-bit aligned
-+      // vector load with byte-swap). The Xbox 360 Xenon CPU does not implement
-+      // the standard AltiVec element-load semantics for these instructions.
++      // Xenon doesn't implement AltiVec element loads; these act as lvx.
        {PPC_INST_LVEBX, build_lvx},
        {PPC_INST_LVEHX, build_lvx},
        {PPC_INST_LVEWX, build_lvx},
-@@ -416,7 +419,7 @@ static const std::unordered_map<int, Builder>& GetDispatchTable() {
+@@ -416,7 +417,7 @@ static const std::unordered_map<int, Builder>& GetDispatchTable() {
        {PPC_INST_VMULFP128, build_vmulfp128},
        {PPC_INST_VMADDFP, build_vmaddfp},
        {PPC_INST_VMADDFP128, build_vmaddfp},
@@ -822,30 +846,24 @@ index 4065fdb..4241669 100644
  
    return manifest;
 diff --git a/src/codegen/phase_discover.cpp b/src/codegen/phase_discover.cpp
-index 1c73548..9827771 100644
+index 1c73548..d1edaf1 100644
 --- a/src/codegen/phase_discover.cpp
 +++ b/src/codegen/phase_discover.cpp
-@@ -404,6 +404,125 @@ void functionPointerScan(CodegenContext& ctx) {
+@@ -404,6 +404,109 @@ void functionPointerScan(CodegenContext& ctx) {
  
  }  // anonymous namespace
  
-+//=============================================================================
-+// Data Section Function Pointer Scan: scan non-executable sections for
-+// dwords that point into executable sections. These are function pointers
-+// stored in vtables, callback arrays, and raw data tables that the RTTI
-+// vtable scanner misses.
-+//=============================================================================
++// Finds function pointers in data sections (vtables, callback tables) that
++// the RTTI vtable scanner misses.
 +void dataSectionFunctionPointerScan(CodegenContext& ctx) {
 +  auto& graph = ctx.graph;
 +  const auto& binary = ctx.binary();
 +
-+  // Build set of existing function entry points
 +  std::unordered_set<uint32_t> existingFunctions;
 +  for (const auto& [addr, node] : graph.functions()) {
 +    existingFunctions.insert(addr);
 +  }
 +
-+  // Collect all executable section ranges
 +  struct ExecRange {
 +    uint32_t start, end;
 +  };
@@ -869,12 +887,10 @@ index 1c73548..9827771 100644
 +    return false;
 +  };
 +
-+  // Also get the import/export range to exclude thunks
 +  uint32_t importStart = binary.importThunkTableStart();
 +
 +  size_t foundCount = 0;
 +
-+  // Scan all non-executable sections for 4-byte aligned dwords
 +  for (const auto& sec : binary.sections()) {
 +    if (sec.executable)
 +      continue;
@@ -888,27 +904,21 @@ index 1c73548..9827771 100644
 +    for (size_t offset = 0; offset + 4 <= sec.size; offset += 4) {
 +      uint32_t value = load_and_swap<uint32_t>(sec.data + offset);
 +
-+      // Skip null and obviously non-address values
 +      if (value == 0 || value == 0xFFFFFFFF)
 +        continue;
 +
-+      // Must be 4-byte aligned (PPC instruction alignment)
 +      if (value & 0x3)
 +        continue;
 +
-+      // Must point into an executable section
 +      if (!isExecutableAddr(value))
 +        continue;
 +
-+      // Skip import/export thunk range
 +      if (importStart != 0 && value >= importStart)
 +        continue;
 +
-+      // Skip if already a known function
 +      if (existingFunctions.count(value))
 +        continue;
 +
-+      // Skip null padding in code (check if the target instruction is 0x00000000)
 +      const uint8_t* targetData = binary.translate(value);
 +      if (targetData) {
 +        uint32_t targetInsn = load_and_swap<uint32_t>(targetData);
@@ -916,7 +926,6 @@ index 1c73548..9827771 100644
 +          continue;
 +      }
 +
-+      // Register as a function pointer target
 +      graph.addFunction(value, 4, FunctionAuthority::VTABLE, true);
 +      existingFunctions.insert(value);
 +      foundCount++;
@@ -929,7 +938,6 @@ index 1c73548..9827771 100644
 +  REXCODEGEN_INFO("dataSectionFunctionPointerScan: found {} new function pointer targets",
 +                  foundCount);
 +
-+  // Run discovery iterations for the newly found functions
 +  if (foundCount > 0) {
 +    size_t iteration = 0;
 +    const size_t maxIterations = REXCVAR_GET(max_vtable_iterations);
@@ -952,33 +960,28 @@ index 1c73548..9827771 100644
  size_t discoverPendingFunctions(CodegenContext& ctx,
                                  const std::unordered_set<uint32_t>& knownFunctions) {
 diff --git a/src/codegen/phase_helpers.h b/src/codegen/phase_helpers.h
-index fdecb6f..646bd88 100644
+index fdecb6f..ea847f4 100644
 --- a/src/codegen/phase_helpers.h
 +++ b/src/codegen/phase_helpers.h
-@@ -38,4 +38,9 @@ inline std::unordered_set<uint32_t> buildKnownFunctions(const FunctionGraph& gra
+@@ -38,4 +38,6 @@ inline std::unordered_set<uint32_t> buildKnownFunctions(const FunctionGraph& gra
  size_t discoverPendingFunctions(CodegenContext& ctx,
                                  const std::unordered_set<uint32_t>& knownFunctions);
  
-+/// Scan non-executable sections for dwords pointing into executable sections.
-+/// Finds function pointers in vtables, callback arrays, and data tables that
-+/// the RTTI vtable scanner misses.
 +void dataSectionFunctionPointerScan(CodegenContext& ctx);
 +
  }  // namespace rex::codegen
 diff --git a/src/core/cvar.cpp b/src/core/cvar.cpp
-index 228728d..0cc29da 100644
+index 228728d..8424fb3 100644
 --- a/src/core/cvar.cpp
 +++ b/src/core/cvar.cpp
-@@ -229,7 +229,30 @@ std::optional<size_t> RegisterFlag(FlagEntry entry) {
+@@ -229,7 +229,28 @@ std::optional<size_t> RegisterFlag(FlagEntry entry) {
    auto& storage = GetRegistryStorage();
    auto it = index.find(entry.name);
    if (it != index.end()) {
 -    REXLOG_ERROR("cvar: duplicate registration of '{}'; second registration ignored", entry.name);
-+    // A second module may define the same cvar (e.g. a GPU backend compiled
-+    // in-process alongside the plugin DLL). Each module owns its own static
-+    // storage; merge the duplicate's setter into the existing entry so
-+    // registry writes (command line, config, SetFlagByName) reach every copy,
-+    // then sync the new storage to the current effective value.
++    // The same cvar can be defined in multiple modules (e.g. a GPU backend
++    // linked in-process alongside the plugin DLL). Merge setters so registry
++    // writes reach every module's storage.
 +    FlagEntry& stored = storage[it->second];
 +    if (entry.type != FlagType::Command && entry.setter) {
 +      auto prev_setter = std::move(stored.setter);
@@ -1036,7 +1039,7 @@ index 163c257..c01e0e3 100644
  }
  
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index a744375..43a0ba7 100644
+index a744375..6c162c9 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
 @@ -14,6 +14,7 @@
@@ -1067,15 +1070,13 @@ index a744375..43a0ba7 100644
  REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
                      "Refresh page-valid state from GPU-written memory at frame end. "
                      "Disable for minor CPU overhead reduction, but may break memory coherency.")
-@@ -1282,6 +1289,87 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
+@@ -1282,6 +1289,84 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
    return true;
  }
  
 +void CommandProcessor::TraceVertexFetchOOB(const Shader& vertex_shader,
 +                                           uint32_t index_count,
 +                                           const IndexBufferInfo* index_buffer_info) {
-+  // Highest index the vertex shader can fetch for this draw. Non-indexed
-+  // draws use the vertex counter; indexed draws scan the guest index buffer.
 +  uint64_t max_index = index_count ? uint64_t(index_count - 1) : 0;
 +  if (index_buffer_info && index_buffer_info->count) {
 +    const uint32_t index_size =
@@ -1135,7 +1136,6 @@ index a744375..43a0ba7 100644
 +      continue;
 +    }
 +
-+    // Report each unique binding configuration once per session.
 +    const uint64_t signature = (uint64_t(binding.fetch_constant) << 48) ^
 +                               (uint64_t(vfetch.dword_0) << 20) ^
 +                               (uint64_t(vfetch.size) << 8) ^
@@ -1156,7 +1156,7 @@ index a744375..43a0ba7 100644
                                                const char* opcode_name, uint32_t viz_query_condition,
                                                uint32_t count_remaining) {
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..efc6e70 100644
+index 19874a5..5902417 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -14,6 +14,7 @@
@@ -1199,18 +1199,13 @@ index 19874a5..efc6e70 100644
    // The swap gamma / FXAA pass samples source texels by pixel index, but swap
    // textures may be allocation-padded. Prefer the active frontbuffer region
    // from the swap packet, scaled proportionally to the actual source texture.
-@@ -2409,6 +2419,61 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2409,6 +2419,49 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
        (pixel_shader != nullptr ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
    texture_cache_->RequestTextures(used_texture_mask);
  
-+  // Override the VP6 YUV pixel shader UV scale constant (c1) because the guest
-+  // is not writing it to the expected register.
 +  if ((used_texture_mask & 0xE) == 0xE) {
 +    float vp6_c1[4];
 +    uint32_t mode = REXCVAR_GET(gpu_vp6_c1_mode);
-+    // The real ucode is `mul r2, r0.xyxy, c1`, so the guest's own c1 already
-+    // holds the luma (xy) and chroma (zw) UV scales. Log what it actually
-+    // contains; mode 3 leaves it untouched so the guest value is used as-is.
 +    {
 +      const float* guest_c1 = reinterpret_cast<const float*>(
 +          &register_file_->values[XE_GPU_REG_SHADER_CONSTANT_256_X + 4]);
@@ -1223,25 +1218,18 @@ index 19874a5..efc6e70 100644
 +    switch (mode) {
 +      default:
 +      case 0:
-+        // Raw pixel scale with the current translator.
 +        vp6_c1[0] = 1.0f / 1280.0f;
 +        vp6_c1[1] = 1.0f / 736.0f;
 +        vp6_c1[2] = 1.0f / 768.0f;
 +        vp6_c1[3] = 1.0f / 384.0f;
 +        break;
 +      case 1:
-+        // Mode A: r0 is already normalized [0, 1]. Measured from guest RAM:
-+        // active luma is 1280x720 in a 1280x736 surface, and active chroma is
-+        // 640x360 in a 768x384 surface. Scale both so the shader never samples
-+        // the uninitialized padding rows/columns.
 +        vp6_c1[0] = 1.0f;
 +        vp6_c1[1] = 720.0f / 736.0f;
 +        vp6_c1[2] = 640.0f / 768.0f;
 +        vp6_c1[3] = 360.0f / 384.0f;
 +        break;
 +      case 2:
-+        // Mode B: r0 contains raw pixel coordinates.
-+        // Luma 1280x736, chroma active 640x360 in a 768x384 texture.
 +        vp6_c1[0] = 1.0f / 1280.0f;
 +        vp6_c1[1] = 1.0f / 736.0f;
 +        vp6_c1[2] = (640.0f / 768.0f) / 1280.0f;
@@ -1261,7 +1249,7 @@ index 19874a5..efc6e70 100644
    // Bind the pipeline after configuring it and doing everything that may bind
    // other pipelines.
    if (current_guest_pipeline_ != pipeline_handle) {
-@@ -2524,6 +2589,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2524,6 +2577,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      }
    }
  
@@ -1272,7 +1260,7 @@ index 19874a5..efc6e70 100644
    // Gather memexport ranges and ensure the heaps for them are resident, and
    // also load the data surrounding the export and to fill the regions that
    // won't be modified by the shaders.
-@@ -2626,6 +2695,54 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2626,6 +2683,52 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
        shared_memory_->UseForReading();
      }
      SubmitBarriers();
@@ -1281,7 +1269,6 @@ index 19874a5..efc6e70 100644
 +        uint32_t descriptor_index = texture_cache_->GetTextureBindingDescriptorIndex(i);
 +        REXGPU_DEBUG("[GPU VP6 Draw] t{} descriptor_index=0x{:08X}", i, descriptor_index);
 +      }
-+      // Log render target format and EDRAM parameters for VP6 draw calls.
 +      auto rb_surface_info_vp6 = regs.Get<reg::RB_SURFACE_INFO>();
 +      auto rb_color0_info_vp6 = regs.Get<reg::RB_COLOR_INFO>(XE_GPU_REG_RB_COLOR_INFO);
 +      auto rb_color1_info_vp6 = regs.Get<reg::RB_COLOR_INFO>(XE_GPU_REG_RB_COLOR1_INFO);
@@ -1308,7 +1295,6 @@ index 19874a5..efc6e70 100644
 +          ff_scissor_.left, ff_scissor_.top,
 +          ff_scissor_.right, ff_scissor_.bottom);
 +
-+      // Log blend state and color write mask for VP6 draw audit.
 +      auto rb_colorcontrol_vp6 = regs.Get<reg::RB_COLORCONTROL>();
 +      uint32_t rb_blendcontrol_rt0_vp6 =
 +          regs[reg::RB_BLENDCONTROL::rt_register_indices[0]];
@@ -1327,7 +1313,7 @@ index 19874a5..efc6e70 100644
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
      deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
-@@ -2685,6 +2802,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2685,6 +2788,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
        shared_memory_->UseForReading();
      }
      SubmitBarriers();
@@ -1341,12 +1327,11 @@ index 19874a5..efc6e70 100644
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
      deferred_command_list_.D3DDrawIndexedInstanced(
-@@ -3245,6 +3369,26 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
+@@ -3245,6 +3355,25 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&page_fault)) && page_fault.PageFaultVA != 0) {
      REXGPU_ERROR("DRED page fault at VA 0x{:016X}", page_fault.PageFaultVA);
    }
 +
-+  // Dump stored D3D12 info queue messages to identify the invalid call.
 +  Microsoft::WRL::ComPtr<ID3D12InfoQueue> info_queue;
 +  if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&info_queue)))) {
 +    UINT64 message_count = info_queue->GetNumStoredMessages();
@@ -1368,13 +1353,10 @@ index 19874a5..efc6e70 100644
  }
  
  bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
-@@ -3830,6 +3974,15 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+@@ -3830,6 +3959,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
      uint32_t texture_signs_mask = uint32_t(0b11111111) << texture_signs_shift;
      dirty |= (texture_signs_uint & texture_signs_mask) != texture_signs_shifted;
      texture_signs_uint = (texture_signs_uint & ~texture_signs_mask) | texture_signs_shifted;
-+    // Integer num_format scale bits for fixed-point textures fetched as
-+    // integer. The shader multiplies normalized host samples by this to
-+    // restore the guest integer range (e.g. [0,255] for 8-bit).
 +    uint32_t texture_integer_scale_bits =
 +        texture_cache_->GetActiveIntegerScaleBits(texture_index);
 +    dirty |= system_constants_.texture_integer_scale_bits[texture_index] !=
@@ -1384,7 +1366,7 @@ index 19874a5..efc6e70 100644
      textures_resolution_scaled |=
          uint32_t(texture_cache_->IsActiveTextureResolutionScaled(texture_index)) << texture_index;
    }
-@@ -3893,6 +4046,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+@@ -3893,6 +4028,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
        system_constants_.edram_rt_keep_mask[i][0] = rt_keep_masks[i][0];
        dirty |= system_constants_.edram_rt_keep_mask[i][1] != rt_keep_masks[i][1];
        system_constants_.edram_rt_keep_mask[i][1] = rt_keep_masks[i][1];
@@ -1397,11 +1379,10 @@ index 19874a5..efc6e70 100644
        if (rt_keep_masks[i][0] != UINT32_MAX || rt_keep_masks[i][1] != UINT32_MAX) {
          uint32_t rt_base_dwords_scaled = color_info.color_base * edram_tile_dwords_scaled;
          dirty |= system_constants_.edram_rt_base_dwords_scaled[i] != rt_base_dwords_scaled;
-@@ -4154,6 +4313,26 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4154,6 +4295,25 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
      }
      cbuffer_binding_float_pixel_.up_to_date = true;
      current_graphics_root_up_to_date_ &= ~(1u << root_parameter_float_constants_pixel);
-+    // Log high-index constants used by the VP6 YUV-to-RGB pixel shader.
 +    if (pixel_shader != nullptr) {
 +      const Shader::ConstantRegisterMap& map = pixel_shader->constant_register_map();
 +      bool has_253 = (map.float_bitmap[3] & (1ull << (253 & 63))) != 0;
@@ -1424,7 +1405,7 @@ index 19874a5..efc6e70 100644
    }
    if (!cbuffer_binding_bool_loop_.up_to_date) {
      constexpr uint32_t kBoolLoopConstantsSize = (8 + 32) * sizeof(uint32_t);
-@@ -4349,9 +4528,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4349,9 +4509,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                  break;
                }
                sampler_index = sampler_bindless_heap_allocated_++;
@@ -1437,7 +1418,7 @@ index 19874a5..efc6e70 100644
                texture_cache_bindless_sampler_map_.emplace(sampler_parameters.value, sampler_index);
              }
              current_sampler_bindless_indices_vertex_[j] = sampler_index;
-@@ -4375,9 +4554,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4375,9 +4535,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                  break;
                }
                sampler_index = sampler_bindless_heap_allocated_++;
@@ -1450,7 +1431,7 @@ index 19874a5..efc6e70 100644
                texture_cache_bindless_sampler_map_.emplace(sampler_parameters.value, sampler_index);
              }
              current_sampler_bindless_indices_pixel_[j] = sampler_index;
-@@ -4589,6 +4768,11 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4589,6 +4749,11 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_textures_pixel_ = view_gpu_handle;
        for (size_t i = 0; i < texture_count_pixel; ++i) {
@@ -1462,7 +1443,7 @@ index 19874a5..efc6e70 100644
          texture_cache_->WriteActiveTextureBindfulSRV((*textures_pixel)[i], view_cpu_handle);
          view_cpu_handle.ptr += descriptor_size_view;
          view_gpu_handle.ptr += descriptor_size_view;
-@@ -4607,7 +4791,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4607,7 +4772,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_samplers_vertex_ = sampler_gpu_handle;
        for (size_t i = 0; i < sampler_count_vertex; ++i) {
@@ -1472,7 +1453,7 @@ index 19874a5..efc6e70 100644
          sampler_cpu_handle.ptr += descriptor_size_sampler;
          sampler_gpu_handle.ptr += descriptor_size_sampler;
        }
-@@ -4621,7 +4806,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4621,7 +4787,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_samplers_pixel_ = sampler_gpu_handle;
        for (size_t i = 0; i < sampler_count_pixel; ++i) {
@@ -1507,14 +1488,14 @@ index 8e6b854..f23cbad 100644
      bool edram_rov_used =
          render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
 diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
-index dd321a5..50fc6a6 100644
+index dd321a5..f8ca47e 100644
 --- a/src/graphics/d3d12/render_target_cache.cpp
 +++ b/src/graphics/d3d12/render_target_cache.cpp
 @@ -173,6 +173,14 @@ bool D3D12RenderTargetCache::Initialize() {
    const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
    ID3D12Device* device = provider.GetDevice();
  
-+  // Log adapter and ROV support for diagnosing render target path selection.
++
 +  REXGPU_INFO(
 +      "[GPU RT Path] render_target_path_d3d12=\"{}\" vendor_id=0x{:04X} "
 +      "ROV_supported={}",
@@ -1526,7 +1507,7 @@ index dd321a5..50fc6a6 100644
      path_ = Path::kHostRenderTargets;
    } else if (REXCVAR_GET(render_target_path_d3d12) == "rov") {
 diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
-index 2be0e8e..ee55a44 100644
+index 2be0e8e..2f583c7 100644
 --- a/src/graphics/d3d12/texture_cache.cpp
 +++ b/src/graphics/d3d12/texture_cache.cpp
 @@ -13,11 +13,17 @@
@@ -1551,7 +1532,7 @@ index 2be0e8e..ee55a44 100644
  void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
    TextureCache::BeginSubmission(new_submission_index);
  
-+  // Drain pending VP6 texture readbacks whose GPU work has completed.
++  // Drain completed VP6 readbacks.
 +  command_processor_.CheckSubmissionFence(0);
 +  uint64_t completed = command_processor_.GetCompletedSubmission();
 +  for (auto it = pending_vp6_readbacks_.begin(); it != pending_vp6_readbacks_.end();) {
@@ -1577,7 +1558,7 @@ index 2be0e8e..ee55a44 100644
 +    }
 +  }
 +
-+  // Release linear upload buffers whose GPU CopyTextureRegion has completed.
++  // Release linear upload buffers once the GPU copy completes.
 +  for (auto it = pending_linear_upload_buffers_.begin();
 +       it != pending_linear_upload_buffers_.end();) {
 +    if (it->submission <= completed) {
@@ -1695,72 +1676,34 @@ index 2be0e8e..ee55a44 100644
    ui::d3d12::util::CreateBufferTypedUAV(
        command_processor_.GetD3D12Provider().GetDevice(), handle, buffer->resource(),
        ui::d3d12::util::GetUintPow2DXGIFormat(element_size_bytes_pow2),
-@@ -1596,7 +1699,35 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1596,7 +1699,21 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
    uint32_t bytes_per_block = guest_format_info->bytes_per_block();
    uint32_t level_first = load_base ? 0 : 1;
    uint32_t level_last = load_mips ? texture_key.mip_max_level : 0;
 +
    assert_true(level_first <= level_last);
 +
-+  // Detect 4:2:0 Chroma planes (768x384 k_8). VP6 chroma is packed at a
-+  // 640-byte active row width inside a 768-byte host pitch; the 8bpb compute
-+  // shader is already set up to copy 640 source bytes per row into a 768-byte
-+  // host pitch with 0x80 neutral padding filling the remaining 128 columns.
 +  bool k8_chroma_768x384 =
 +      guest_format == xenos::TextureFormat::k_8 && !texture_key.tiled &&
 +      width == 768 && height == 384;
 +  uint32_t k8_chroma_stride = k8_chroma_768x384 ? 640 : 0;
 +  bool k8_chroma_640 = k8_chroma_768x384 && (k8_chroma_stride == 640);
-+  // VP6 luma (1280x736) can be copied directly from shared memory because the
-+  // guest pitch (1280) matches the host RowPitch.
 +  bool k8_luma_1280x736 =
 +      guest_format == xenos::TextureFormat::k_8 && !texture_key.tiled &&
 +      width == 1280 && height == 736;
-+  // Dedicated linear upload path for ALL linear (untiled) k_8/k_8_8 textures.
-+  // Software video decoders (VP6, Bink) write linear planar YUV byte arrays
-+  // directly into guest RAM, bypassing the Xenos GPU's Morton tiling hardware.
-+  // Standard compute untiling pipelines break these surfaces because they treat
-+  // all guest textures as tiled 3D surfaces. This generalized flag triggers the
-+  // bypass path for any untiled 8-bit texture, not just known VP6 dimensions.
 +  bool linear_k8 = !texture_key.tiled &&
 +                   (guest_format == xenos::TextureFormat::k_8 ||
 +                    guest_format == xenos::TextureFormat::k_8_8);
-+  // Legacy flag kept for diagnostic logging compatibility with known VP6
-+  // dimensions. The bypass logic now uses linear_k8 for all linear 8-bit.
 +  bool k8_linear_video_plane = linear_k8;
    uint32_t level_packed = guest_layout.packed_level;
    uint32_t level_stored_first = std::min(level_first, level_packed);
    uint32_t level_stored_last = std::min(level_last, level_packed);
-@@ -1688,13 +1819,396 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1688,13 +1805,292 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      (is_base ? host_slice_size_base : host_slice_sizes_mips[level]) = level_host_slice_size;
      copy_buffer_size += level_host_slice_size * array_size;
    }
 -  D3D12_RESOURCE_STATES copy_buffer_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 +
-+  // =========================================================================
-+  // Dedicated Linear Upload Path (Bypass Compute Untiling)
-+  // =========================================================================
-+  // Software video decoders (VP6, Bink) running on the Xbox 360 guest CPU
-+  // write linear planar YUV byte arrays straight into guest RAM, completely
-+  // bypassing the Xenos GPU's Morton tiling hardware. Standard emulator GPU
-+  // pipelines break these surfaces because they treat all guest textures as
-+  // tiled 3D surfaces.
-+  //
-+  // This path implements the Xenia Canary linear surface pipeline:
-+  // 1. Bypasses compute untiling shaders and endian byte-swap passes entirely.
-+  // 2. For luma (guest_pitch 1280, 256-aligned): direct CopyTextureRegion from
-+  //    shared memory to the host texture using a PLACED_FOOTPRINT with
-+  //    RowPitch = guest_pitch.
-+  // 3. For chroma (guest_pitch 640, NOT 256-aligned): 640 cannot be used as a
-+  //    D3D12_PLACED_SUBRESOURCE_FOOTPRINT.RowPitch (D3D12 requires 256-byte
-+  //    alignment). Instead, use a staging buffer:
-+  //    a. Pre-clear staging to 0x80 (neutral chroma) for padding columns.
-+  //    b. Row-by-row D3DCopyBufferRegion: copy 640 active bytes per row from
-+  //       guest memory into 768-byte host-aligned rows in the staging buffer.
-+  //    c. CopyTextureRegion from staging to texture with
-+  //       Footprint.Width = 640, Footprint.RowPitch = 768.
-+  //    The 768-byte RowPitch is ONLY for the D3D12 host destination resource.
-+  //    Guest source memory reads always use 640 bytes per line.
 +  if (linear_k8) {
 +    D3D12SharedMemory& d3d12_shared_memory =
 +        static_cast<D3D12SharedMemory&>(shared_memory());
@@ -1777,23 +1720,11 @@ index 2be0e8e..ee55a44 100644
 +    uint32_t host_row_pitch = host_slice_layout_base.Footprint.RowPitch;
 +    uint32_t active_height = host_slice_layout_base.Footprint.Height;
 +
-+    // VP6 decoder writes both luma and chroma planes at the full fetch-
-+    // constant pitch (1280 for luma, 768 for chroma). SSD row-similarity
-+    // measurements confirm: ssd768 ~10M vs ssd640 ~217M, proving rows are
-+    // 768-byte pitched with 640 active bytes + 128 padding bytes at 0x80
-+    // (neutral chroma). Since 768 is 256-byte aligned and matches the host
-+    // pitch, chroma can use the same direct CopyTextureRegion path as luma.
-+    // Mode A UV scaling (c1 z=640/768, w=360/384) ensures the pixel shader
-+    // samples only the 640x360 active region and discards the padding.
 +    bool is_vp6_chroma = (guest_format == xenos::TextureFormat::k_8 &&
 +                          width == 768 && height == 384);
 +    uint32_t guest_row_pitch = guest_layout.base.row_pitch_bytes;
 +    uint32_t active_width = is_vp6_chroma ? 640 : guest_row_pitch;
 +
-+    // Both 1280 (luma) and 768 (chroma) are 256-byte aligned and match the
-+    // host pitch, so direct CopyTextureRegion from shared memory works for
-+    // all VP6 planes. The staging path is kept for any future non-aligned
-+    // pitches but is not exercised by VP6.
 +    bool guest_pitch_256_aligned =
 +        (guest_row_pitch % D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) == 0;
 +    bool needs_staging =
@@ -1809,30 +1740,6 @@ index 2be0e8e..ee55a44 100644
 +        host_slice_layout_base.Footprint.Width);
 +
 +    if (needs_staging) {
-+      // ---- CPU staging upload path (chroma: 640-byte guest pitch) ----
-+      // D3D12 CopyBufferRegion requires 512-byte aligned buffer offsets.
-+      // Striding by 640 bytes (640, 1280, 1920...) violates D3D12 offset
-+      // alignment rules, corrupting row dispatches on the GPU copy queue.
-+      //
-+      // Instead, use a D3D12 HEAP_TYPE_UPLOAD buffer that can be CPU-mapped:
-+      // 1. Create an upload buffer (host_slice_size_base bytes).
-+      // 2. Map it to get a CPU-accessible pointer.
-+      // 3. CPU row-by-row memcpy: 640 bytes from guest RAM into 768-byte
-+      //    host-aligned rows, with 128 padding bytes set to 0x80 (neutral
-+      //    chroma).
-+      // 4. Unmap.
-+      // 5. Single CopyTextureRegion from the upload buffer to the texture
-+      //    using D3D12_PLACED_SUBRESOURCE_FOOTPRINT with RowPitch=768,
-+      //    Width=640, Height=384.
-+      //
-+      // CRITICAL: The upload buffer must be kept alive until the GPU completes
-+      // the CopyTextureRegion. A local ComPtr would be destroyed when the
-+      // function returns, but the deferred command list hasn't been executed
-+      // yet ├óÔéČÔÇŁ causing a use-after-free crash in the GPU driver (0xC0000005 in
-+      // nvwgf2umx.dll). The buffer is stored in pending_linear_upload_buffers_
-+      // and released in BeginSubmission once the GPU confirms completion.
-+
-+      // Diagnostic: log guest pointer translation before attempting the copy.
 +      const uint8_t* guest_ram_ptr =
 +          shared_memory().TranslatePhysicalForDebug(guest_address);
 +
@@ -1844,13 +1751,11 @@ index 2be0e8e..ee55a44 100644
 +          uint64_t(host_row_pitch) * active_height,
 +          uint32_t(host_copy_format));
 +
-+      // Guard clause: if guest RAM pointer is null, log and bypass.
 +      if (guest_ram_ptr == nullptr) {
 +        REXGPU_ERROR(
 +            "[GPU Linear K8 CRITICAL] TranslatePhysicalForDebug returned null "
 +            "for guest_address=0x{:X} ├óÔéČÔÇŁ bypassing chroma upload",
 +            guest_address);
-+        // Transition texture to SRV anyway so the pipeline doesn't stall.
 +        command_processor_.PushTransitionBarrier(
 +            texture_resource,
 +            d3d12_texture.SetResourceState(
@@ -1898,7 +1803,6 @@ index 2be0e8e..ee55a44 100644
 +        return true;
 +      }
 +
-+      // Map the upload buffer for CPU writes.
 +      uint8_t* mapped_dst = nullptr;
 +      HRESULT hr_map = upload_buffer->Map(0, nullptr,
 +                                          reinterpret_cast<void**>(&mapped_dst));
@@ -1924,10 +1828,6 @@ index 2be0e8e..ee55a44 100644
 +        return true;
 +      }
 +
-+      // CPU row-by-row strided memcpy:
-+      //   src: guest_ram_ptr + (row * 640)   ├óÔéČÔÇŁ 640 active bytes
-+      //   dst: mapped_dst   + (row * 768)   ├óÔéČÔÇŁ 768-byte host-aligned row
-+      //   padding: 128 bytes set to 0x80 (neutral chroma)
 +      uint32_t padding_bytes = host_row_pitch - guest_row_pitch;
 +      for (uint32_t row = 0; row < active_height; ++row) {
 +        uint8_t* dst_row = mapped_dst + UINT64(row) * host_row_pitch;
@@ -1936,19 +1836,10 @@ index 2be0e8e..ee55a44 100644
 +        std::memset(dst_row + guest_row_pitch, 0x80, padding_bytes);
 +      }
 +
-+      // Unmap the upload buffer (no dirty range needed ├óÔéČÔÇŁ full write).
 +      upload_buffer->Unmap(0, nullptr);
 +
-+      // Single hardware CopyTextureRegion from the upload buffer to the
-+      // host D3D12 texture resource.
-+      // Footprint.Width must equal the texture resource width (768 for chroma),
-+      // NOT the active width (640). D3D12 CopyTextureRegion only copies
-+      // Footprint.Width pixels per row from the source ├óÔéČÔÇŁ if Width < texture
-+      // width, the remaining destination pixels are NOT overwritten, leaving
-+      // stale compute-untiled data that causes visual corruption.
-+      // The upload buffer already has 768 bytes per row (640 active + 128
-+      // padding at 0x80), so copying the full host_row_pitch width fills the
-+      // entire texture correctly.
++      // Footprint.Width must be the full texture width, not the active width,
++      // or CopyTextureRegion leaves stale data in the padding columns.
 +      D3D12_TEXTURE_COPY_LOCATION staging_source = {};
 +      staging_source.pResource = upload_buffer.Get();
 +      staging_source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -1968,19 +1859,9 @@ index 2be0e8e..ee55a44 100644
 +      command_list.D3DCopyTextureRegion(&linear_dest, 0, 0, 0,
 +                                        &staging_source, nullptr);
 +
-+      // Keep the upload buffer alive until the GPU completes this submission.
-+      // The deferred command list hasn't been executed yet ├óÔéČÔÇŁ releasing the
-+      // buffer now would cause a use-after-free in the GPU driver.
 +      pending_linear_upload_buffers_.push_back(
 +          {upload_buffer, command_processor_.GetCurrentSubmission()});
 +    } else {
-+      // ---- Direct copy path (luma 1280-byte, chroma 768-byte pitch) ----
-+      // Both pitches are 256-byte aligned and match the host pitch, so
-+      // CopyTextureRegion directly from shared memory to the texture works.
-+      // Footprint.Width = full texture width (768 for chroma) to copy all
-+      // pixels including the 0x80 padding bytes the decoder already wrote.
-+      // Mode A UV scaling (c1 z=640/768) ensures the shader only samples the
-+      // 640 active columns.
 +      D3D12_TEXTURE_COPY_LOCATION linear_source = {};
 +      linear_source.pResource = d3d12_shared_memory.GetBuffer();
 +      linear_source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -2001,7 +1882,6 @@ index 2be0e8e..ee55a44 100644
 +                                        &linear_source, nullptr);
 +    }
 +
-+    // Transition texture to SRV for immediate sampling by pixel shaders.
 +    command_processor_.PushTransitionBarrier(
 +        texture_resource,
 +        d3d12_texture.SetResourceState(
@@ -2011,11 +1891,6 @@ index 2be0e8e..ee55a44 100644
 +            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 +    command_processor_.SubmitBarriers();
 +
-+    // GPU readback verification: copy a 16-byte window from the texture
-+    // (row 300, col 200) back to a readback buffer and log it. Compare
-+    // against the guest RAM dump "[GPU VP6 LumaRows] r300" to verify the
-+    // upload is faithful. If readback matches guest RAM, the corruption is
-+    // downstream (shader/render target/presentation), not in the upload.
 +    if (!texture_key.tiled && texture_key.format == xenos::TextureFormat::k_8 &&
 +        width == 1280 && height == 736) {
 +      ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
@@ -2036,7 +1911,6 @@ index 2be0e8e..ee55a44 100644
 +              &heap_props, D3D12_HEAP_FLAG_NONE, &rb_desc,
 +              D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
 +              IID_PPV_ARGS(&readback)))) {
-+        // Transition texture back to COPY_SOURCE for readback.
 +        command_processor_.PushTransitionBarrier(
 +            texture_resource,
 +            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -2061,7 +1935,6 @@ index 2be0e8e..ee55a44 100644
 +        D3D12_BOX box = {200, 300, 0, 264, 301, 1};
 +        command_list.D3DCopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, &box);
 +
-+        // Transition texture back to SRV.
 +        command_processor_.PushTransitionBarrier(
 +            texture_resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
 +            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -2080,12 +1953,6 @@ index 2be0e8e..ee55a44 100644
 +    return true;
 +  }
 +
-+  // VP6 video planes (1280x736 luma / 768x384 chroma) are written linearly by
-+  // the decoder. Bypass the compute untiler and use D3DCopyBufferRegion when
-+  // the guest pitch matches the host RowPitch.
-+  // For chroma planes with 640-byte active data, the buffer needs to be
-+  // pre-filled with 0x80 (neutral chroma) so the padding columns are correct.
-+  // Allocate as UAV first so we can clear it, then transition to COPY_DEST.
 +  D3D12_RESOURCE_STATES copy_buffer_state =
 +      k8_linear_video_plane ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
 +                            : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -2095,16 +1962,13 @@ index 2be0e8e..ee55a44 100644
      return false;
    }
  
-+  // For chroma planes, pre-clear the entire staging buffer to 0x80 (neutral
-+  // chroma) so that the 128-byte padding columns per row are correct after
-+  // the row-by-row copy of the 640 active bytes.
 +  if (k8_chroma_640) {
 +    ui::d3d12::util::DescriptorCpuGpuHandlePair clear_desc;
 +    if (command_processor_.RequestOneUseSingleViewDescriptors(1, &clear_desc)) {
 +      ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
 +      ui::d3d12::util::CreateBufferTypedUAV(
 +          device, clear_desc.first, copy_buffer,
-+          ui::d3d12::util::GetUintPow2DXGIFormat(0),  // R8 format
++          ui::d3d12::util::GetUintPow2DXGIFormat(0),
 +          uint32_t(copy_buffer_size));
 +      UINT clear_values[4] = {0x00000080, 0, 0, 0};
 +      command_list.D3DClearUnorderedAccessViewUint(
@@ -2118,7 +1982,6 @@ index 2be0e8e..ee55a44 100644
 +    }
 +  }
 +
-+  // Transition the copy buffer to COPY_DEST for the linear video plane path.
 +  if (k8_linear_video_plane) {
 +    command_processor_.PushTransitionBarrier(
 +        copy_buffer, copy_buffer_state, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -2129,7 +1992,7 @@ index 2be0e8e..ee55a44 100644
    // Begin loading.
    // May use different buffers for scaled base and mips, and also addressability
    // of more than 128 * 2^20 (2^D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP)
-@@ -1718,35 +2232,40 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1718,34 +2114,33 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      return false;
    }
    uint32_t descriptor_write_index = 0;
@@ -2160,12 +2023,9 @@ index 2be0e8e..ee55a44 100644
 -      d3d12_shared_memory.WriteUintPow2SRVDescriptor(descriptor_unscaled_source.first,
 -                                                     load_shader_info.source_bpe_log2);
 +
-+  // For linear video planes, the copy buffer is in COPY_DEST state and we
-+  // bypass the compute shader entirely. Skip all compute descriptor setup.
 +  if (!k8_linear_video_plane) {
 +    command_processor_.SetExternalPipeline(pipeline);
 +    command_list.D3DSetComputeRootSignature(load_root_signature_.Get());
-+    // Set up the destination descriptor.
 +    assert_true(descriptor_write_index < descriptor_count);
 +    ui::d3d12::util::DescriptorCpuGpuHandlePair descriptor_dest =
 +        descriptors_allocated[descriptor_write_index++];
@@ -2174,9 +2034,6 @@ index 2be0e8e..ee55a44 100644
 +        ui::d3d12::util::GetUintPow2DXGIFormat(load_shader_info.dest_bpe_log2),
 +        uint32_t(copy_buffer_size) >> load_shader_info.dest_bpe_log2);
 +    command_list.D3DSetComputeRootDescriptorTable(2, descriptor_dest.second);
-+    // Set up the unscaled source descriptor (scaled needs two descriptors that
-+    // depend on the buffer being current, so they will be set later - for mips,
-+    // after loading the base is done).
 +    if (!texture_resolution_scaled) {
 +      D3D12SharedMemory& d3d12_shared_memory = static_cast<D3D12SharedMemory&>(shared_memory());
 +      d3d12_shared_memory.UseForReading();
@@ -2193,12 +2050,10 @@ index 2be0e8e..ee55a44 100644
 +      command_list.D3DSetComputeRootDescriptorTable(1, descriptor_unscaled_source.second);
      }
 -    command_list.D3DSetComputeRootDescriptorTable(1, descriptor_unscaled_source.second);
--  }
-+  }  // if (!k8_linear_video_plane)
+   }
  
    // Submit the copy buffer population commands.
- 
-@@ -1757,8 +2276,8 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1757,8 +2152,8 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
    assert_true(texture_resolution_scale_y <= 7);
    load_constants.is_tiled_3d_endian_scale =
        uint32_t(texture_key.tiled) | (uint32_t(is_3d_tiling) << 1) |
@@ -2209,13 +2064,10 @@ index 2be0e8e..ee55a44 100644
  
    // The loop is slices within levels because the base and the levels may need
    // different portions of the scaled resolve virtual address space to be
-@@ -1772,6 +2291,53 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1772,6 +2167,39 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
  
      uint32_t guest_address = (is_base ? texture_key.base_page : texture_key.mip_page) << 12;
  
-+    // For linear VP6 video planes (luma 1280x736, chroma 768x384) copy directly
-+    // from shared memory into the staging buffer, bypassing the compute untiler,
-+    // then skip to the next level.
 +    if (k8_linear_video_plane) {
 +      D3D12SharedMemory& d3d12_shared_memory =
 +          static_cast<D3D12SharedMemory&>(shared_memory());
@@ -2225,12 +2077,6 @@ index 2be0e8e..ee55a44 100644
 +      uint32_t guest_row_pitch = guest_layout.base.row_pitch_bytes;
 +      uint32_t rows = host_slice_layout_base.Footprint.Height;
 +
-+      // For chroma planes with 640-byte active data inside a 768-byte host
-+      // pitch, we need to:
-+      // 1. Copy 640 bytes per row from guest memory
-+      // 2. Fill the remaining 128 bytes with 0x80 (neutral chroma)
-+      // The copy buffer was already cleared to 0x80 for k8_chroma_640 above.
-+      // For luma (1280 pitch == host pitch), do a flat copy.
 +      uint32_t active_width = k8_chroma_640 ? 640 : guest_row_pitch;
 +
 +      REXGPU_DEBUG("[GPU VP6 Linear] Base: 0x{:X} host_pitch: {} guest_pitch: {} "
@@ -2240,16 +2086,11 @@ index 2be0e8e..ee55a44 100644
 +          uint64_t(host_slice_size_base), k8_chroma_640);
 +
 +      if (host_row_pitch == active_width) {
-+        // Flat copy ├óÔéČÔÇŁ pitches match exactly.
 +        command_list.D3DCopyBufferRegion(copy_buffer, 0,
 +                                         d3d12_shared_memory.GetBuffer(),
 +                                         guest_address,
 +                                         uint32_t(host_slice_size_base));
 +      } else {
-+        // Row-by-row copy: copy active_width bytes per row, leaving the
-+        // remaining (host_row_pitch - active_width) bytes untouched. For
-+        // k8_chroma_640, the copy buffer was pre-cleared to 0x80 so the
-+        // padding bytes are already neutral chroma.
 +        for (uint32_t row = 0; row < rows; ++row) {
 +          command_list.D3DCopyBufferRegion(
 +              copy_buffer, UINT64(row) * host_row_pitch,
@@ -2263,31 +2104,27 @@ index 2be0e8e..ee55a44 100644
      // Set up the base or mips source, also making it accessible if loading from
      // scaled resolve memory.
      if (texture_resolution_scaled && (is_base || !scaled_mips_source_set_up)) {
-@@ -1815,6 +2381,11 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1815,6 +2243,9 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
        assert_zero(level_guest_pitch & (xenos::kTextureTileWidthHeight - 1));
      }
      load_constants.guest_pitch_aligned = level_guest_pitch;
-+    // For 4:2:0 Chroma, the decoder writes 640 active bytes per row even
-+    // though the Xenos fetch constant declares a 768-byte pitch.
 +    if (k8_chroma_640 && is_base) {
 +      load_constants.guest_pitch_aligned = 640;
 +    }
      load_constants.guest_z_stride_block_rows_aligned = level_guest_layout.z_slice_stride_block_rows;
      assert_true(!is_3d_tiling || !(load_constants.guest_z_stride_block_rows_aligned &
                                     (xenos::kTextureTileWidthHeight - 1)));
-@@ -1834,6 +2405,11 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1834,6 +2265,9 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      }
      load_constants.size_blocks[0] =
          (level_width + (block_width - 1)) / block_width * texture_resolution_scale_x;
-+    // For 4:2:0 Chroma, only dispatch over the 640 active columns. The host
-+    // upload buffer is 768 wide and was pre-filled with 0x80 (neutral chroma).
 +    if (k8_chroma_640 && is_base) {
 +      load_constants.size_blocks[0] = 640;
 +    }
      load_constants.size_blocks[1] =
          (level_height + (block_height - 1)) / block_height * texture_resolution_scale_y;
      load_constants.size_blocks[2] = level_depth;
-@@ -1853,6 +2429,17 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1853,6 +2287,17 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      load_constants.host_offset = uint32_t(level_host_slice_layout.Offset);
      load_constants.host_pitch = level_host_slice_layout.Footprint.RowPitch;
  
@@ -2305,12 +2142,10 @@ index 2be0e8e..ee55a44 100644
      command_list.D3DSetComputeRoot32BitConstants(0, sizeof(load_constants) / sizeof(uint32_t),
                                                   &load_constants, 0);
  
-@@ -1871,6 +2458,13 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1871,6 +2316,11 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
        assert_true(copy_buffer_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
        command_processor_.SubmitBarriers();
        command_list.D3DDispatch(group_count_x, group_count_y, load_constants.size_blocks[2]);
-+      // Ensure the 8bpb compute UAV write is flushed before the CPU/GPU later
-+      // reads it via CopyBufferRegion/CopyTextureRegion.
 +      if (!texture_key.tiled &&
 +          (texture_key.format == xenos::TextureFormat::k_8 ||
 +           texture_key.format == xenos::TextureFormat::k_8_8)) {
@@ -2319,12 +2154,10 @@ index 2be0e8e..ee55a44 100644
        load_constants.guest_offset += level_array_slice_stride_bytes_scaled;
        load_constants.host_offset += host_slice_size;
      }
-@@ -1930,6 +2524,79 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1930,6 +2380,72 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
      }
    }
  
-+  // For streaming 8-bit textures, immediately transition the destination to
-+  // SRV so the pixel shader can't sample it while still in COPY_DEST.
 +  if (!texture_key.tiled &&
 +      (texture_key.format == xenos::TextureFormat::k_8 ||
 +       texture_key.format == xenos::TextureFormat::k_8_8)) {
@@ -2337,11 +2170,6 @@ index 2be0e8e..ee55a44 100644
 +    command_processor_.SubmitBarriers();
 +  }
 +
-+  // Read back the uploaded LUMA texture and compare it against guest RAM. The
-+  // guest side is dumped as "[GPU VP6 LumaRows] r300" starting at row 300,
-+  // column 200, so read the identical window here. Identical bytes mean the
-+  // upload is faithful and the fault lies in the shader/sampling; differing
-+  // bytes mean the corruption is introduced by the upload path.
 +  if (!texture_key.tiled && texture_key.format == xenos::TextureFormat::k_8 &&
 +      width == 1280 && height == 736) {
 +    ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
@@ -2399,7 +2227,7 @@ index 2be0e8e..ee55a44 100644
    command_processor_.ReleaseScratchGPUBuffer(copy_buffer, copy_buffer_state);
  
    return true;
-@@ -1946,6 +2613,7 @@ void D3D12TextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask)
+@@ -1946,6 +2462,7 @@ void D3D12TextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask)
      if (!binding) {
        continue;
      }
@@ -2407,7 +2235,7 @@ index 2be0e8e..ee55a44 100644
      if (IsSignedVersionSeparateForFormat(binding->key)) {
        if (binding->texture && texture_util::IsAnySignNotSigned(binding->swizzled_signs)) {
          d3d12_binding.descriptor_index =
-@@ -1995,6 +2663,10 @@ ID3D12Resource* D3D12TextureCache::D3D12Texture::GetOrCreate3DAs2DResource(
+@@ -1995,6 +2512,10 @@ ID3D12Resource* D3D12TextureCache::D3D12Texture::GetOrCreate3DAs2DResource(
    desc.Alignment = 0;
    desc.Width = key().GetWidth();
    desc.Height = key().GetHeight();
@@ -2418,11 +2246,10 @@ index 2be0e8e..ee55a44 100644
    desc.DepthOrArraySize = 1;
    desc.MipLevels = 1;
    desc.Format = d3d12_cache.GetDXGIResourceFormat(key());
-@@ -2068,6 +2740,12 @@ uint32_t D3D12TextureCache::FindOrCreateTextureDescriptor(D3D12Texture& texture,
+@@ -2068,6 +2589,11 @@ uint32_t D3D12TextureCache::FindOrCreateTextureDescriptor(D3D12Texture& texture,
    } else {
      desc.Format = GetDXGIUnormFormat(texture_key);
    }
-+  // VP6 8-bit Chroma is sampled as unsigned UNORM.
 +  if (texture_key.format == xenos::TextureFormat::k_8 &&
 +      texture_key.GetWidth() == 768 && texture_key.GetHeight() == 384) {
 +    assert_true(!is_signed);
@@ -2432,7 +2259,7 @@ index 2be0e8e..ee55a44 100644
      unsupported_format_features_used_[uint32_t(format)] |=
          is_signed ? kUnsupportedSnormBit : kUnsupportedUnormBit;
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 8f2fcb0..9e4c937 100644
+index 8f2fcb0..7953dfd 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
 @@ -39,6 +39,11 @@ REXCVAR_DEFINE_BOOL(store_shaders, true, "GPU",
@@ -2458,13 +2285,11 @@ index 8f2fcb0..9e4c937 100644
          uint64_t guest_tick_frequency = chrono::Clock::guest_tick_frequency();
          uint64_t vsync_interval_ticks =
              std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
-@@ -166,7 +175,13 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -166,7 +175,11 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
              MarkVblank();
              last_frame_time += interval_ticks;
            }
 -          rex::thread::Sleep(std::chrono::milliseconds(1));
-+          // When time scalar > 1 (fast-forward), yield instead of sleeping
-+          // to allow vblanks to fire as fast as the guest clock advances.
 +          if (chrono::Clock::guest_time_scalar() > 1.0) {
 +            rex::thread::MaybeYield();
 +          } else {
@@ -2488,7 +2313,7 @@ index 2c31a0e..9f4a2ae 100644
  
  void DxbcShaderTranslator::WriteResourceDefinition() {
 diff --git a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
-index 31de175..926fc2b 100644
+index 31de175..b2934da 100644
 --- a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
 +++ b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
 @@ -16,11 +16,14 @@
@@ -2506,14 +2331,12 @@ index 31de175..926fc2b 100644
  #include <rex/math.h>
  #include <rex/string.h>
  
-@@ -1951,6 +1954,42 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+@@ -1951,6 +1954,39 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
      PopSystemTemp();
    }
  
 +  if (instr.opcode == FetchOpcode::kTextureFetch) {
-+    // num_format is applied after signedness. A fixed-point format's host
-+    // view returns normalized values, so for an integer num_format restore
-+    // the guest integer range here.
++    // Integer num_format on fixed formats: restore the guest integer range.
 +    uint32_t integer_scale_bits_temp = PushSystemTemp();
 +    uint32_t integer_scale_temp = PushSystemTemp();
 +    dxbc::Dest integer_scale_bits_dest(
@@ -2527,8 +2350,7 @@ index 31de175..926fc2b 100644
 +        offsetof(SystemConstants, texture_integer_scale_bits) +
 +            sizeof(uint32_t) * tfetch_index,
 +        dxbc::Src::kXXXX);
-+    // Uniform early out. Zero means leave the sample alone. Only integer
-+    // num_format on fixed textures has scale bits.
++    // Early out: 0 means no scale.
 +    a_.OpIf(true, integer_scale_bits_packed);
 +    a_.OpUBFE(integer_scale_bits_dest, dxbc::Src::LU(5),
 +              dxbc::Src::LU(0, 5, 10, 15), integer_scale_bits_packed);
@@ -2562,7 +2384,7 @@ index a7d508a..c3a15ea 100644
  #include <rex/graphics/pipeline/render_target/cache.h>
  #include <rex/graphics/pipeline/shader/dxbc_translator.h>
 diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
-index 76f5600..70307c1 100644
+index 76f5600..0d0a8c2 100644
 --- a/src/graphics/pipeline/texture/cache.cpp
 +++ b/src/graphics/pipeline/texture/cache.cpp
 @@ -45,7 +45,7 @@ REXCVAR_DEFINE_INT32(texture_cache_memory_limit_soft_lifetime, 30, "GPU",
@@ -2625,18 +2447,12 @@ index 76f5600..70307c1 100644
      return false;
    }
  
-@@ -384,6 +422,24 @@ bool TextureCache::PrepareTextureLoad(Texture& texture, PendingTextureLoad& pend
+@@ -384,6 +422,18 @@ bool TextureCache::PrepareTextureLoad(Texture& texture, PendingTextureLoad& pend
      if (outdated_mask & Texture::kOutdatedBitMips) {
        mips_outdated = texture.mips_outdated(global_lock);
      }
-+    // Software video decoders (VP6, Bink) write asynchronously to a ring
-+    // buffer of 8-bit linear surfaces in guest RAM. Because guest CPU code
-+    // updates video frames in-place within fixed RAM allocations, the GPU
-+    // texture cache never sees GPU surface state changes. Force eviction /
-+    // re-upload for these formats on every draw call so the cache never
-+    // reuses stale ring-buffer frames. This applies to all k_8/k_8_8
-+    // textures, with linear (untiled) surfaces handled by the dedicated
-+    // linear upload path in D3D12TextureCache.
++    // Software video decoders update linear surfaces in place in guest RAM;
++    // force re-upload each draw.
 +    if (streaming_8bit) {
 +      if (texture.GetGuestBaseSize()) {
 +        texture.WatchCallback(global_lock, false);
@@ -2650,7 +2466,7 @@ index 76f5600..70307c1 100644
    }
    if (!base_outdated && !mips_outdated) {
      return false;
-@@ -394,7 +450,6 @@ bool TextureCache::PrepareTextureLoad(Texture& texture, PendingTextureLoad& pend
+@@ -394,7 +444,6 @@ bool TextureCache::PrepareTextureLoad(Texture& texture, PendingTextureLoad& pend
    pending_load_out.load_mips = mips_outdated;
    pending_range_count_out = 0;
  
@@ -2658,7 +2474,7 @@ index 76f5600..70307c1 100644
    if (base_outdated) {
      PendingSharedMemoryRange pending_range;
      pending_range.start = texture_key.base_page << 12;
-@@ -492,6 +547,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+@@ -492,6 +541,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
      TextureBinding& binding = texture_bindings_[index];
      xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(index);
      TextureKey old_key = binding.key;
@@ -2666,7 +2482,7 @@ index 76f5600..70307c1 100644
      uint8_t old_swizzled_signs = binding.swizzled_signs;
      BindingInfoFromFetchConstant(fetch, binding.key, &binding.swizzled_signs);
      texture_bindings_in_sync_ |= index_bit;
-@@ -504,16 +560,33 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+@@ -504,16 +554,29 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
      }
      uint32_t old_host_swizzle = binding.host_swizzle;
      binding.host_swizzle = GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(binding.key));
@@ -2678,12 +2494,8 @@ index 76f5600..70307c1 100644
      // (if the format is emulated with different host bit representations for
      // signed and unsigned - otherwise only the unsigned one is loaded).
      bool key_changed = binding.key != old_key;
-+    // VP6/Bink pre-rendered video surfaces are 8-bit linear and are recreated
-+    // or evicted frequently. Force a rebind so the SRV descriptor always points
-+    // to the current host D3D12Texture resource, not a destroyed previous one.
-+    // Generalized to all linear (untiled) k_8/k_8_8 textures, not just known
-+    // VP6 dimensions ├óÔéČÔÇŁ software video decoders write linear YUV planes that
-+    // bypass the Xenos GPU tiling hardware.
++    // Linear video surfaces are recreated frequently; force a rebind so the
++    // SRV never points at a destroyed texture.
 +    bool streaming_linear_video =
 +        !binding.key.tiled &&
 +        (binding.key.format == xenos::TextureFormat::k_8 ||
@@ -2701,21 +2513,18 @@ index 76f5600..70307c1 100644
          any_sign_is_not_signed != any_sign_was_not_signed ||
          any_sign_is_signed != any_sign_was_signed) {
        bindings_changed |= index_bit;
-@@ -529,6 +602,13 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+@@ -529,6 +592,10 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
        if (any_sign_is_not_signed) {
          if (key_changed || !any_sign_was_not_signed) {
            binding.texture = FindOrCreateTexture(binding.key);
 +          // FindOrCreateTexture may adjust scaled_resolve on the key copy.
-+          // Update binding.key to match the actual texture's key so future
-+          // comparisons detect changes correctly (fixes 2x resolution crash
-+          // where a scaled texture was reused as unscaled or vice versa).
 +          if (binding.texture) {
 +            binding.key = binding.texture->key();
 +          }
            load_unsigned_data = true;
          }
        } else {
-@@ -539,6 +619,9 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+@@ -539,6 +606,9 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
            TextureKey signed_key = binding.key;
            signed_key.signed_separate = 1;
            binding.texture_signed = FindOrCreateTexture(signed_key);
@@ -2725,7 +2534,7 @@ index 76f5600..70307c1 100644
            load_signed_data = true;
          }
        } else {
-@@ -549,6 +632,9 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+@@ -549,6 +619,9 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
        // be different.
        if (key_changed) {
          binding.texture = FindOrCreateTexture(binding.key);
@@ -2883,10 +2692,10 @@ index c456e1e..e97c6a0 100644
    return &format_infos[gpu_format];
  }
 diff --git a/src/graphics/pipeline/texture/util.cpp b/src/graphics/pipeline/texture/util.cpp
-index 26d554c..651cd42 100644
+index 26d554c..9d62173 100644
 --- a/src/graphics/pipeline/texture/util.cpp
 +++ b/src/graphics/pipeline/texture/util.cpp
-@@ -312,10 +312,12 @@ TextureGuestLayout GetGuestTextureLayout(xenos::DataDimension dimension,
+@@ -312,10 +312,9 @@ TextureGuestLayout GetGuestTextureLayout(xenos::DataDimension dimension,
          rex::align(row_pitch_texels_unaligned, format_info->block_width) / format_info->block_width,
          xenos::kTextureTileWidthHeight);
      level_layout.row_pitch_bytes = row_pitch_blocks_tile_aligned * bytes_per_block;
@@ -2894,11 +2703,8 @@ index 26d554c..651cd42 100644
 -    // considering the guest-provided pitch more important (no information about
 -    // how the GPU actually handles unaligned rows).
 -    if (!is_tiled && !is_base) {
-+    // The Xenos GPU requires 256-byte alignment of linear texture block rows
-+    // for ALL textures (including the base level), as documented in the fetch
-+    // constant pitch field description. Apply this alignment universally for
-+    // linear textures to prevent stride mismatches that cause horizontal
-+    // drifting and green vertical artifacts in video (YUV planar) textures.
++    // Linear texture rows must be 256-byte aligned per the fetch constant
++    // pitch field.
 +    if (!is_tiled) {
        level_layout.row_pitch_bytes =
            rex::align(level_layout.row_pitch_bytes, xenos::kTextureLinearRowAlignmentBytes);
@@ -2954,10 +2760,31 @@ index ec0df7c..78a020a 100644
                                                      uint32_t length_allocations) {
    assert_always(
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..1a4db86 100644
+index 001f36b..1c904f1 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
-@@ -4027,6 +4027,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -2306,8 +2306,6 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+ 
+   SwapPostEffect swap_post_effect = GetActualSwapPostEffect();
+ 
+-  // Obtain the actual swap source texture size (resolution-scaled if it's a
+-  // resolve destination, or not otherwise).
+   uint32_t frontbuffer_width_scaled, frontbuffer_height_scaled;
+   uint32_t frontbuffer_width_unscaled = 0, frontbuffer_height_unscaled = 0;
+   xenos::TextureFormat frontbuffer_format;
+@@ -2319,9 +2317,8 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+     REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
+     return;
+   }
+-  // The swap gamma / FXAA pass samples source texels by pixel index, but swap
+-  // textures may be allocation-padded. Prefer the active frontbuffer region
+-  // from the swap packet, scaled proportionally to the actual source texture.
++  // Swap textures may be allocation-padded; sample only the active region
++  // from the swap packet, scaled to the actual source texture.
+   auto get_active_swap_dimension = [](uint32_t packet_unscaled, uint32_t source_unscaled,
+                                       uint32_t source_scaled) -> uint32_t {
+     if (!source_scaled) {
+@@ -4027,6 +4024,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
      }
    }
  
@@ -2968,24 +2795,357 @@ index 001f36b..1a4db86 100644
    // Synchronize the memory pages backing memory scatter export streams, and
    // calculate the range that includes the streams for the buffer barrier.
    uint32_t memexport_extent_start = UINT32_MAX, memexport_extent_end = 0;
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 91ac08f..79a787f 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -564,6 +564,136 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
+            shader_storage_file_);
+   }
+ 
++  // Persistent SPIR-V translation cache (.vkspv).
++  {
++    struct SpvStorageConfig {
++      uint32_t translator_version;
++      SpirvShaderTranslator::Features features;
++      uint8_t msaa_attachments;
++      uint8_t msaa_no_attachments;
++      uint8_t edram_fsi;
++      uint32_t draw_resolution_scale_x;
++      uint32_t draw_resolution_scale_y;
++    };
++    SpvStorageConfig spv_config;
++    std::memset(&spv_config, 0, sizeof(spv_config));
++    spv_config.translator_version = SpirvShaderTranslator::Modification::kVersion;
++    spv_config.features =
++        SpirvShaderTranslator::Features(command_processor_.GetVulkanDevice());
++    spv_config.msaa_attachments =
++        render_target_cache_.msaa_2x_attachments_supported() ? 1 : 0;
++    spv_config.msaa_no_attachments =
++        render_target_cache_.msaa_2x_no_attachments_supported() ? 1 : 0;
++    spv_config.edram_fsi = edram_fragment_shader_interlock ? 1 : 0;
++    spv_config.draw_resolution_scale_x =
++        render_target_cache_.draw_resolution_scale_x();
++    spv_config.draw_resolution_scale_y =
++        render_target_cache_.draw_resolution_scale_y();
++    const uint64_t spv_config_fingerprint =
++        XXH3_64bits(&spv_config, sizeof(spv_config));
++
++    auto spv_storage_file_path =
++        shader_storage_shareable_root / fmt::format("{:08X}.vkspv", title_id);
++    spv_storage_file_ =
++        rex::filesystem::OpenFile(spv_storage_file_path, "a+b");
++    if (!spv_storage_file_) {
++      REXGPU_ERROR(
++          "Failed to open the SPIR-V storage file for writing, persistent "
++          "SPIR-V storage will be disabled: {}",
++          rex::path_to_utf8(spv_storage_file_path));
++    } else {
++      struct {
++        uint32_t magic;
++        uint32_t reserved;
++        uint64_t config_fingerprint;
++      } spv_file_header;
++      // 'XSPV'.
++      const uint32_t spv_storage_magic = 0x56505358;
++      uint64_t spv_storage_valid_bytes = sizeof(spv_file_header);
++      bool spv_header_ok =
++          fread(&spv_file_header, sizeof(spv_file_header), 1,
++                spv_storage_file_) &&
++          spv_file_header.magic == spv_storage_magic &&
++          spv_file_header.config_fingerprint == spv_config_fingerprint;
++      if (spv_header_ok) {
++        struct SpvStoredRecordHeader {
++          uint64_t ucode_data_hash;
++          uint64_t modification;
++          uint32_t is_valid;
++          uint32_t spirv_dword_count;
++          uint32_t texture_binding_count;
++          uint32_t sampler_binding_count;
++          uint32_t used_texture_mask;
++        } spv_record_header;
++        std::vector<uint8_t> spv_record_data;
++        while (true) {
++          if (!fread(&spv_record_header, sizeof(spv_record_header), 1,
++                     spv_storage_file_)) {
++            break;
++          }
++          // Sanity bounds - a corrupt header must not cause huge reads.
++          if (spv_record_header.spirv_dword_count > (16u * 1024u * 1024u) ||
++              spv_record_header.texture_binding_count > 64u ||
++              spv_record_header.sampler_binding_count > 64u) {
++            break;
++          }
++          const size_t spv_record_payload_bytes =
++              size_t(spv_record_header.spirv_dword_count) * sizeof(uint32_t) +
++              size_t(spv_record_header.texture_binding_count) *
++                  sizeof(VulkanShader::TextureBinding) +
++              size_t(spv_record_header.sampler_binding_count) *
++                  sizeof(VulkanShader::SamplerBinding);
++          spv_record_data.resize(spv_record_payload_bytes);
++          if (spv_record_payload_bytes &&
++              !fread(spv_record_data.data(), spv_record_payload_bytes, 1,
++                     spv_storage_file_)) {
++            break;
++          }
++          SpvCacheEntry entry;
++          entry.is_valid = spv_record_header.is_valid != 0;
++          const size_t spv_record_spirv_bytes =
++              size_t(spv_record_header.spirv_dword_count) * sizeof(uint32_t);
++          entry.spirv.assign(spv_record_data.data(),
++                             spv_record_data.data() + spv_record_spirv_bytes);
++          const auto* record_tex_bindings =
++              reinterpret_cast<const VulkanShader::TextureBinding*>(
++                  spv_record_data.data() + spv_record_spirv_bytes);
++          entry.texture_bindings.assign(
++              record_tex_bindings,
++              record_tex_bindings + spv_record_header.texture_binding_count);
++          const auto* record_sampler_bindings =
++              reinterpret_cast<const VulkanShader::SamplerBinding*>(
++                  record_tex_bindings +
++                  spv_record_header.texture_binding_count);
++          entry.sampler_bindings.assign(
++              record_sampler_bindings,
++              record_sampler_bindings +
++                  spv_record_header.sampler_binding_count);
++          entry.used_texture_mask = spv_record_header.used_texture_mask;
++          SpvCacheKey spv_key{spv_record_header.ucode_data_hash,
++                              spv_record_header.modification};
++          spv_cache_.emplace(spv_key, std::move(entry));
++          spv_storage_valid_bytes +=
++              sizeof(spv_record_header) + spv_record_payload_bytes;
++        }
++        rex::filesystem::TruncateStdioFile(spv_storage_file_,
++                                           spv_storage_valid_bytes);
++        if (spv_storage_valid_bytes > sizeof(spv_file_header)) {
++          REXGPU_INFO("VulkanPipelineCache: loaded {} cached SPIR-V "
++                      "translations",
++                      spv_cache_.size());
++        }
++      } else {
++        rex::filesystem::TruncateStdioFile(spv_storage_file_, 0);
++        spv_file_header.magic = spv_storage_magic;
++        spv_file_header.reserved = 0;
++        spv_file_header.config_fingerprint = spv_config_fingerprint;
++        fwrite(&spv_file_header, sizeof(spv_file_header), 1,
++               spv_storage_file_);
++      }
++    }
++  }
++
+   // Translate shader modifications needed for stored pipelines.
+   for (const std::pair<uint64_t, uint64_t>& translation_needed : shader_translations_needed) {
+     auto shader_it = shaders_.find(translation_needed.first);
+@@ -726,6 +856,16 @@ void VulkanPipelineCache::ShutdownShaderStorage() {
+   }
+   storage_write_shader_queue_.clear();
+   storage_write_pipeline_queue_.clear();
++  storage_write_spv_queue_.clear();
++
++  if (spv_storage_file_) {
++    fclose(spv_storage_file_);
++    spv_storage_file_ = nullptr;
++  }
++  {
++    std::lock_guard<std::mutex> lock(spv_cache_mutex_);
++    spv_cache_.clear();
++  }
+ 
+   if (pipeline_storage_file_) {
+     fclose(pipeline_storage_file_);
+@@ -1232,15 +1372,125 @@ void VulkanPipelineCache::GetPipelineAndLayoutByHandle(
+   }
+ }
+ 
++bool VulkanPipelineCache::TryLoadCachedSpirvTranslation(
++    VulkanShader::VulkanTranslation& translation) {
++  VulkanShader& shader = static_cast<VulkanShader&>(translation.shader());
++  SpvCacheKey key{shader.ucode_data_hash(), translation.modification()};
++  std::lock_guard<std::mutex> lock(spv_cache_mutex_);
++  auto it = spv_cache_.find(key);
++  if (it == spv_cache_.end()) {
++    return false;
++  }
++  const SpvCacheEntry& entry = it->second;
++  shader.SetCachedBindings(entry.texture_bindings.data(),
++                           entry.texture_bindings.size(),
++                           entry.sampler_bindings.data(),
++                           entry.sampler_bindings.size(),
++                           entry.used_texture_mask);
++  translation.AdoptCachedResult(entry.spirv.data(), entry.spirv.size(),
++                                entry.is_valid);
++  return true;
++}
++
++void VulkanPipelineCache::QueueCachedSpirvTranslationWrite(
++    const VulkanShader::VulkanTranslation& translation) {
++  const VulkanShader& shader =
++      static_cast<const VulkanShader&>(translation.shader());
++
++  SpvCacheEntry entry;
++  entry.is_valid = translation.is_valid();
++  entry.spirv = translation.translated_binary();
++  entry.texture_bindings = shader.GetTextureBindingsAfterTranslation();
++  entry.sampler_bindings = shader.GetSamplerBindingsAfterTranslation();
++  entry.used_texture_mask = shader.GetUsedTextureMaskAfterTranslation();
++
++  SpvCacheKey key{shader.ucode_data_hash(), translation.modification()};
++  {
++    std::lock_guard<std::mutex> lock(spv_cache_mutex_);
++    if (!spv_cache_.emplace(key, std::move(entry)).second) {
++      // Already persisted by an earlier translation.
++      return;
++    }
++  }
++  if (!spv_storage_file_) {
++    return;
++  }
++
++  // Serialize the record; the storage write thread performs the actual IO.
++  struct SpvStoredRecordHeader {
++    uint64_t ucode_data_hash;
++    uint64_t modification;
++    uint32_t is_valid;
++    uint32_t spirv_dword_count;
++    uint32_t texture_binding_count;
++    uint32_t sampler_binding_count;
++    uint32_t used_texture_mask;
++  } spv_record_header;
++  spv_record_header.ucode_data_hash = key.ucode_hash;
++  spv_record_header.modification = key.modification;
++  spv_record_header.is_valid = translation.is_valid() ? 1 : 0;
++  spv_record_header.spirv_dword_count =
++      uint32_t(translation.translated_binary().size() / sizeof(uint32_t));
++  spv_record_header.texture_binding_count =
++      uint32_t(shader.GetTextureBindingsAfterTranslation().size());
++  spv_record_header.sampler_binding_count =
++      uint32_t(shader.GetSamplerBindingsAfterTranslation().size());
++  spv_record_header.used_texture_mask =
++      shader.GetUsedTextureMaskAfterTranslation();
++
++  const size_t spv_record_size =
++      sizeof(spv_record_header) +
++      size_t(spv_record_header.spirv_dword_count) * sizeof(uint32_t) +
++      size_t(spv_record_header.texture_binding_count) *
++          sizeof(VulkanShader::TextureBinding) +
++      size_t(spv_record_header.sampler_binding_count) *
++          sizeof(VulkanShader::SamplerBinding);
++  std::vector<uint8_t> spv_record(spv_record_size);
++  uint8_t* spv_record_out = spv_record.data();
++  std::memcpy(spv_record_out, &spv_record_header, sizeof(spv_record_header));
++  spv_record_out += sizeof(spv_record_header);
++  if (!translation.translated_binary().empty()) {
++    std::memcpy(spv_record_out, translation.translated_binary().data(),
++                size_t(spv_record_header.spirv_dword_count) *
++                    sizeof(uint32_t));
++    spv_record_out += size_t(spv_record_header.spirv_dword_count) *
++                      sizeof(uint32_t);
++  }
++  if (spv_record_header.texture_binding_count) {
++    std::memcpy(spv_record_out,
++                shader.GetTextureBindingsAfterTranslation().data(),
++                size_t(spv_record_header.texture_binding_count) *
++                    sizeof(VulkanShader::TextureBinding));
++    spv_record_out += size_t(spv_record_header.texture_binding_count) *
++                      sizeof(VulkanShader::TextureBinding);
++  }
++  if (spv_record_header.sampler_binding_count) {
++    std::memcpy(spv_record_out,
++                shader.GetSamplerBindingsAfterTranslation().data(),
++                size_t(spv_record_header.sampler_binding_count) *
++                    sizeof(VulkanShader::SamplerBinding));
++  }
++
++  shader_storage_file_flush_needed_ = true;
++  {
++    std::lock_guard<std::mutex> lock(storage_write_request_lock_);
++    storage_write_spv_queue_.push_back(std::move(spv_record));
++  }
++  storage_write_request_cond_.notify_all();
++}
++
+ bool VulkanPipelineCache::TranslateAnalyzedShader(SpirvShaderTranslator& translator,
+                                                   VulkanShader::VulkanTranslation& translation) {
+   VulkanShader& shader = static_cast<VulkanShader&>(translation.shader());
+ 
+-  // Perform translation.
++  // Perform translation (or adopt the persisted SPIR-V from a previous run).
+   // If this fails the shader will be marked as invalid and ignored later.
+-  if (!translator.TranslateAnalyzedShader(translation)) {
+-    REXGPU_ERROR("Shader {:016X} translation failed; marking as ignored", shader.ucode_data_hash());
+-    return false;
++  if (!TryLoadCachedSpirvTranslation(translation)) {
++    if (!translator.TranslateAnalyzedShader(translation)) {
++      REXGPU_ERROR("Shader {:016X} translation failed; marking as ignored", shader.ucode_data_hash());
++      return false;
++    }
++    QueueCachedSpirvTranslationWrite(translation);
+   }
+   if (translation.GetOrCreateShaderModule() == VK_NULL_HANDLE) {
+     return false;
+@@ -3638,6 +3888,9 @@ void VulkanPipelineCache::StorageWriteThread() {
+       flush_shaders = false;
+       assert_not_null(shader_storage_file_);
+       fflush(shader_storage_file_);
++      if (spv_storage_file_) {
++        fflush(spv_storage_file_);
++      }
+     }
+     if (flush_pipelines) {
+       flush_pipelines = false;
+@@ -3648,6 +3901,7 @@ void VulkanPipelineCache::StorageWriteThread() {
+     const Shader* shader = nullptr;
+     PipelineStoredDescription pipeline_description;
+     bool write_pipeline = false;
++    std::vector<uint8_t> spv_record;
+     {
+       std::unique_lock<std::mutex> lock(storage_write_request_lock_);
+       if (storage_write_thread_shutdown_) {
+@@ -3669,7 +3923,11 @@ void VulkanPipelineCache::StorageWriteThread() {
+         storage_write_flush_pipelines_ = false;
+         flush_pipelines = true;
+       }
+-      if (!shader && !write_pipeline) {
++      if (!storage_write_spv_queue_.empty()) {
++        spv_record = std::move(storage_write_spv_queue_.front());
++        storage_write_spv_queue_.pop_front();
++      }
++      if (!shader && !write_pipeline && spv_record.empty()) {
+         storage_write_request_cond_.wait(lock);
+         continue;
+       }
+@@ -3696,6 +3954,10 @@ void VulkanPipelineCache::StorageWriteThread() {
+       assert_not_null(pipeline_storage_file_);
+       fwrite(&pipeline_description, sizeof(pipeline_description), 1, pipeline_storage_file_);
+     }
++
++    if (!spv_record.empty() && spv_storage_file_) {
++      fwrite(spv_record.data(), spv_record.size(), 1, spv_storage_file_);
++    }
+   }
+ }
+ 
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index 3f9422d..55f07a6 100644
+index 3f9422d..f5a2e7d 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
 +++ b/src/input/mnk/mnk_input_driver.cpp
-@@ -68,9 +68,9 @@ constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x
- // Bind values are a comma-separated list of alternatives, each optionally
- // carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
- // so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
+@@ -65,12 +65,9 @@ namespace {
+ // A single device, so its handle is a constant.
+ constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x4D4E4B00);
+ 
+-// Bind values are a comma-separated list of alternatives, each optionally
+-// carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
+-// so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
 -// it. That is what lets the D-pad share the arrow keys. A consequence is
 -// that binding a bare modifier name ("Shift") can never fire, since holding it
 -// makes the live mask non-zero while the bind wants zero.
-+// it. That is what lets the D-pad share the arrow keys. A bind naming a
-+// modifier key itself ("Shift") ignores that key's own contribution to the
-+// live mask so it fires when only that modifier is held.
++// Bind values are comma-separated alternatives with optional modifier
++// prefixes ("Q,I", "Shift+W"). Modifier matching is exact; a bind naming a
++// modifier itself ignores that key's own contribution to the live mask.
  constexpr uint8_t kModShift = 1u << 0;
  constexpr uint8_t kModCtrl = 1u << 1;
  constexpr uint8_t kModAlt = 1u << 2;
-@@ -124,13 +124,20 @@ std::string_view TrimSpaces(std::string_view s) {
+@@ -124,13 +121,20 @@ std::string_view TrimSpaces(std::string_view s) {
  
  bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
    uint8_t want = TakeModifiers(token);
@@ -3009,7 +3169,7 @@ index 3f9422d..55f07a6 100644
    uint16_t idx = static_cast<uint16_t>(vk);
    return idx < 256 && key_down[idx];
  }
-@@ -510,6 +517,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
+@@ -510,6 +514,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
      case rex::ui::MouseEvent::Button::kMiddle:
        SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), true);
        break;
@@ -3022,7 +3182,7 @@ index 3f9422d..55f07a6 100644
      default:
        break;
    }
-@@ -529,6 +542,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+@@ -529,6 +539,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
      case rex::ui::MouseEvent::Button::kMiddle:
        SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), false);
        break;
@@ -3036,21 +3196,18 @@ index 3f9422d..55f07a6 100644
        break;
    }
 diff --git a/src/kernel/xam/apps/xlivebase_app.cpp b/src/kernel/xam/apps/xlivebase_app.cpp
-index 3593403..6275aba 100644
+index 3593403..bbe184f 100644
 --- a/src/kernel/xam/apps/xlivebase_app.cpp
 +++ b/src/kernel/xam/apps/xlivebase_app.cpp
-@@ -77,6 +77,18 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -77,6 +77,15 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
        REXKRNL_DEBUG("XPresenceInitialize({:08X}, {:08X})", buffer_ptr, buffer_length);
        return X_E_SUCCESS;
      }
 +    case 0x0005000E: {
-+      // XUserFindUsers - called when loading a save game to find user profiles.
-+      // The buffer contains a marshalled request with user search criteria.
-+      // Returning success with zero results prevents the game from
-+      // dereferencing a null pointer when the call fails.
++      // XUserFindUsers - return success with zero results; the game
++      // dereferences a null pointer on failure.
 +      REXKRNL_DEBUG("XUserFindUsers({:08X}, {:08X}) - returning empty", buffer_ptr, buffer_length);
 +      if (buffer && buffer_length >= 4) {
-+        // Zero the result count so the game sees no users found.
 +        memory::store_and_swap<uint32_t>(buffer, 0);
 +      }
 +      return X_E_SUCCESS;
@@ -3256,10 +3413,10 @@ index 1254710..3308c40 100644
                texture_format == rex::graphics::xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16);
    assert_true(color_space == 0);  // RGB(0)
 diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
-index bd43109..d3f9791 100644
+index bd43109..7b2e466 100644
 --- a/src/system/function_dispatcher.cpp
 +++ b/src/system/function_dispatcher.cpp
-@@ -35,8 +35,11 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+@@ -35,8 +35,10 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
  }  // namespace
  
  static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
@@ -3267,14 +3424,13 @@ index bd43109..d3f9791 100644
 -            ctx.last_indirect_target);
 +  REXLOG_ERROR("Call to unresolved function at guest address 0x{:08X} (returning)",
 +              ctx.last_indirect_target);
-+  // Return instead of crashing. Many indirect call targets are runtime-computed
-+  // vtable entries that static analysis cannot discover. Returning is safer
-+  // than crashing and lets the game continue past non-critical callbacks.
++  // Return instead of crashing; some indirect targets are runtime-computed
++  // vtable entries that static analysis can't discover.
  }
  
  PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
 diff --git a/src/system/mmio_handler.cpp b/src/system/mmio_handler.cpp
-index 2b93005..881be9a 100644
+index 2b93005..870398a 100644
 --- a/src/system/mmio_handler.cpp
 +++ b/src/system/mmio_handler.cpp
 @@ -13,6 +13,11 @@
@@ -3415,15 +3571,14 @@ index 2b93005..881be9a 100644
    }
    decoded_out.length = i;
    return true;
-@@ -417,8 +519,42 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
+@@ -417,8 +519,41 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
      // The address is not found within any range, so either a write watch or an
      // actual access violation.
      if (access_violation_callback_) {
 -      return access_violation_callback_(std::move(lock), access_violation_callback_context_,
 -                                        fault_host_address, is_write);
-+      // Call the access violation callback first. Write-watch triggers on
-+      // GPU shared memory are expected and handled successfully ÔÇö only log
-+      // diagnostic info when the callback fails to handle the violation.
++      // Write-watch triggers on GPU shared memory are expected; only log
++      // when the callback fails to handle the violation.
 +      bool handled = access_violation_callback_(std::move(lock),
 +                                                access_violation_callback_context_,
 +                                                fault_host_address, is_write);
@@ -3514,7 +3669,7 @@ index 76cc877..b0c4004 100644
    }
  
 diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
-index 306118e..084b551 100644
+index 306118e..a04477d 100644
 --- a/src/ui/d3d12/d3d12_presenter.cpp
 +++ b/src/ui/d3d12/d3d12_presenter.cpp
 @@ -33,6 +33,11 @@
@@ -3801,14 +3956,12 @@ index 306118e..084b551 100644
  void D3D12Presenter::PaintContext::DestroySwapChain() {
    if (!swap_chain) {
      return;
-@@ -1155,9 +1376,25 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+@@ -1155,9 +1376,23 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
    // fullscreen is ever used in, the allow tearing flag must not be passed in
    // fullscreen, but DXGI fullscreen is largely unneeded with the flip
    // presentation model used in Direct3D 12).
 +  //
-+  // When d3d12_host_vsync is true, use SyncInterval=1 to synchronize with the
-+  // display refresh rate and disable tearing for a smooth, tear-free
-+  // experience.
++  // d3d12_host_vsync: SyncInterval=1, no tearing.
 +  bool host_vsync = REXCVAR_GET(d3d12_host_vsync);
 +  UINT present_sync_interval = host_vsync ? 1 : 0;
 +  UINT present_flags = DXGI_PRESENT_RESTART;
