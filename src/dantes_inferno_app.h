@@ -14,6 +14,8 @@
 #include <rex/system/xam/content_manager.h>
 #include <rex/logging/macros.h>
 
+#include "native_renderer/dante_graphics_system.h"
+
 #include <array>
 #include <chrono>
 #include <cstring>
@@ -266,11 +268,8 @@ class DantesInfernoApp : public rex::ReXApp {
     });
 
     if (REXCVAR_GET(show_fps_overlay) && imgui_drawer()) {
-      auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
-      auto* command_processor = gfx_sys
-          ? static_cast<rex::graphics::GraphicsSystem*>(gfx_sys)->command_processor()
-          : nullptr;
-      fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(), command_processor);
+      fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(),
+                                                        GetCommandProcessor());
     }
 
     rex::ui::RegisterBind("bind_fps_overlay", "F1",
@@ -278,11 +277,8 @@ class DantesInfernoApp : public rex::ReXApp {
       if (fps_overlay_) {
         fps_overlay_.reset();
       } else if (imgui_drawer()) {
-        auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
-        auto* command_processor = gfx_sys
-            ? static_cast<rex::graphics::GraphicsSystem*>(gfx_sys)->command_processor()
-            : nullptr;
-        fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(), command_processor);
+        fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(),
+                                                          GetCommandProcessor());
       }
     });
 
@@ -413,5 +409,16 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
  private:
+  rex::graphics::CommandProcessor* GetCommandProcessor() {
+    auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
+    if (auto* dante_sys =
+            dynamic_cast<dante::DanteGraphicsSystem*>(gfx_sys)) {
+      gfx_sys = dante_sys->inner();
+    }
+    auto* con_sys =
+        dynamic_cast<rex::graphics::GraphicsSystem*>(gfx_sys);
+    return con_sys ? con_sys->command_processor() : nullptr;
+  }
+
   std::unique_ptr<FpsOverlayDialog> fps_overlay_;
 };

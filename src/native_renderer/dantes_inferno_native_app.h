@@ -31,6 +31,17 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
     DantesInfernoApp::OnPostSetup();
 
     if (!rex::cvar::Query<bool>("use_native_presenter")) return;
+
+    // The in-process Vulkan backend presents through its own VulkanPresenter;
+    // layering NativePresenter on top would disconnect it, spin up a second
+    // (DiligentCore) device, and fall back to CPU readback.
+    if (rex::cvar::Query<std::string>("renderer") == "native") {
+      REXLOG_INFO(
+          "use_native_presenter ignored: in-process Vulkan backend presents "
+          "directly");
+      return;
+    }
+
     if (!window()) return;
 
     auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
