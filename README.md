@@ -198,7 +198,7 @@ Code `dantes_inferno_exe.sh` is:
   - Mouse & keyboard keybind defaults configured
 
 ### In progress
-- [ ] DLC auto-install hook (`OnPostSetup` STFS package scan)
+- [x] DLC auto-install hook (`OnPostSetup` STFS package scan)
 - [ ] 120 Hz / high-refresh timing polish (gameplay OK; menu/minigame timing under reverse engineering)
 - [ ] Native DiligentCore/Vulkan renderer migration (working, not fully implemented)
 
