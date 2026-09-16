@@ -57,13 +57,11 @@ foreach ($f in $gameFiles) {
     }
 }
 
-$ffxVkDll = Join-Path $GameBuildDir "..\..\thirdparty\rexglue-sdk\out\win-amd64\amd_fidelityfx_vk.dll"
-$ffxVkDst = Join-Path $GameBuildDir "amd_fidelityfx_vk.dll"
+$ffxVkDll = Join-Path $GameBuildDir "thirdparty\rexglue-sdk\out\win-amd64\amd_fidelityfx_vk.dll"
 if (Test-Path $ffxVkDll) {
-    Copy-Item $ffxVkDll $ffxVkDst -Force
-    Write-Host "Copied amd_fidelityfx_vk.dll to build output for packaging"
+    Write-Host "Found amd_fidelityfx_vk.dll at $ffxVkDll"
 } else {
-    Write-Warning "amd_fidelityfx_vk.dll not found at $ffxVkDll - installer may not include it"
+    Write-Host "amd_fidelityfx_vk.dll not built; installer will skip it (not required for Vulkan CAS/FSR shaders)"
 }
 
 $tuSrc = Join-Path $root "..\game\default.xexp"

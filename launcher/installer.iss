@@ -6,7 +6,7 @@
 #define MyAppPublisher "florinp93"
 #define MyAppURL "https://github.com/florinp93/hells-gate-recomp"
 #define MyAppExeName "DantesInfernoLauncher.exe"
-#define MyAppVersion "0.6.6-beta"
+#define MyAppVersion "0.7.0-beta"
 
 [Setup]
 AppId={{DANTES-INFERNO-PC-PORT}}
@@ -46,7 +46,10 @@ Source: "..\out\build\win-amd64-release\dantes_inferno_native.exe"; DestDir: "{a
 Source: "..\out\build\win-amd64-release\rexruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\out\build\win-amd64-release\rexgpu-xenos.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\out\build\win-amd64-release\amd_fidelityfx_dx12.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\out\build\win-amd64-release\amd_fidelityfx_vk.dll"; DestDir: "{app}"; Flags: ignoreversion
+#define FfxVkPath SourcePath + "\..\out\build\win-amd64-release\thirdparty\rexglue-sdk\out\win-amd64\amd_fidelityfx_vk.dll"
+#if FileExists(FfxVkPath)
+Source: "{#FfxVkPath}"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 ; Launcher
 Source: "DantesInfernoLauncher\bin\Release\DantesInfernoLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion
