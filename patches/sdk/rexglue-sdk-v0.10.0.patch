@@ -1181,7 +1181,7 @@ index a744375..6c162c9 100644
                                                const char* opcode_name, uint32_t viz_query_condition,
                                                uint32_t count_remaining) {
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..5902417 100644
+index 19874a5..f8ec76e 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -14,6 +14,7 @@
@@ -1224,7 +1224,21 @@ index 19874a5..5902417 100644
    // The swap gamma / FXAA pass samples source texels by pixel index, but swap
    // textures may be allocation-padded. Prefer the active frontbuffer region
    // from the swap packet, scaled proportionally to the actual source texture.
-@@ -2409,6 +2419,49 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -1984,6 +1994,13 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
++  // Dante's Inferno: with ultrawide active the guest renders anamorphically
++  // for the target aspect, so report that ratio instead of the video mode's.
++  const double target_aspect = rex::cvar::Query<double>("ultrawide_target_aspect");
++  if (target_aspect > 0.0) {
++    display_height = 720;
++    display_width = uint32_t(std::clamp(target_aspect * 720.0, 1.0, 16384.0));
++  }
+ 
+   presenter->RefreshGuestOutput(
+       guest_output_width, guest_output_height, display_width, display_height,
+@@ -2409,6 +2426,49 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
        (pixel_shader != nullptr ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
    texture_cache_->RequestTextures(used_texture_mask);
  
@@ -1274,7 +1288,7 @@ index 19874a5..5902417 100644
    // Bind the pipeline after configuring it and doing everything that may bind
    // other pipelines.
    if (current_guest_pipeline_ != pipeline_handle) {
-@@ -2524,6 +2577,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2524,6 +2584,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      }
    }
  
@@ -1285,7 +1299,7 @@ index 19874a5..5902417 100644
    // Gather memexport ranges and ensure the heaps for them are resident, and
    // also load the data surrounding the export and to fill the regions that
    // won't be modified by the shaders.
-@@ -2626,6 +2683,52 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2626,6 +2690,52 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
        shared_memory_->UseForReading();
      }
      SubmitBarriers();
@@ -1338,7 +1352,7 @@ index 19874a5..5902417 100644
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
      deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
-@@ -2685,6 +2788,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2685,6 +2795,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
        shared_memory_->UseForReading();
      }
      SubmitBarriers();
@@ -1352,7 +1366,7 @@ index 19874a5..5902417 100644
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
      deferred_command_list_.D3DDrawIndexedInstanced(
-@@ -3245,6 +3355,25 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
+@@ -3245,6 +3362,25 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&page_fault)) && page_fault.PageFaultVA != 0) {
      REXGPU_ERROR("DRED page fault at VA 0x{:016X}", page_fault.PageFaultVA);
    }
@@ -1378,7 +1392,7 @@ index 19874a5..5902417 100644
  }
  
  bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
-@@ -3830,6 +3959,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+@@ -3830,6 +3966,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
      uint32_t texture_signs_mask = uint32_t(0b11111111) << texture_signs_shift;
      dirty |= (texture_signs_uint & texture_signs_mask) != texture_signs_shifted;
      texture_signs_uint = (texture_signs_uint & ~texture_signs_mask) | texture_signs_shifted;
@@ -1391,7 +1405,7 @@ index 19874a5..5902417 100644
      textures_resolution_scaled |=
          uint32_t(texture_cache_->IsActiveTextureResolutionScaled(texture_index)) << texture_index;
    }
-@@ -3893,6 +4028,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+@@ -3893,6 +4035,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
        system_constants_.edram_rt_keep_mask[i][0] = rt_keep_masks[i][0];
        dirty |= system_constants_.edram_rt_keep_mask[i][1] != rt_keep_masks[i][1];
        system_constants_.edram_rt_keep_mask[i][1] = rt_keep_masks[i][1];
@@ -1404,7 +1418,7 @@ index 19874a5..5902417 100644
        if (rt_keep_masks[i][0] != UINT32_MAX || rt_keep_masks[i][1] != UINT32_MAX) {
          uint32_t rt_base_dwords_scaled = color_info.color_base * edram_tile_dwords_scaled;
          dirty |= system_constants_.edram_rt_base_dwords_scaled[i] != rt_base_dwords_scaled;
-@@ -4154,6 +4295,25 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4154,6 +4302,25 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
      }
      cbuffer_binding_float_pixel_.up_to_date = true;
      current_graphics_root_up_to_date_ &= ~(1u << root_parameter_float_constants_pixel);
@@ -1430,7 +1444,7 @@ index 19874a5..5902417 100644
    }
    if (!cbuffer_binding_bool_loop_.up_to_date) {
      constexpr uint32_t kBoolLoopConstantsSize = (8 + 32) * sizeof(uint32_t);
-@@ -4349,9 +4509,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4349,9 +4516,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                  break;
                }
                sampler_index = sampler_bindless_heap_allocated_++;
@@ -1443,7 +1457,7 @@ index 19874a5..5902417 100644
                texture_cache_bindless_sampler_map_.emplace(sampler_parameters.value, sampler_index);
              }
              current_sampler_bindless_indices_vertex_[j] = sampler_index;
-@@ -4375,9 +4535,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4375,9 +4542,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                  break;
                }
                sampler_index = sampler_bindless_heap_allocated_++;
@@ -1456,7 +1470,7 @@ index 19874a5..5902417 100644
                texture_cache_bindless_sampler_map_.emplace(sampler_parameters.value, sampler_index);
              }
              current_sampler_bindless_indices_pixel_[j] = sampler_index;
-@@ -4589,6 +4749,11 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4589,6 +4756,11 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_textures_pixel_ = view_gpu_handle;
        for (size_t i = 0; i < texture_count_pixel; ++i) {
@@ -1468,7 +1482,7 @@ index 19874a5..5902417 100644
          texture_cache_->WriteActiveTextureBindfulSRV((*textures_pixel)[i], view_cpu_handle);
          view_cpu_handle.ptr += descriptor_size_view;
          view_gpu_handle.ptr += descriptor_size_view;
-@@ -4607,7 +4772,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4607,7 +4779,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_samplers_vertex_ = sampler_gpu_handle;
        for (size_t i = 0; i < sampler_count_vertex; ++i) {
@@ -1478,7 +1492,7 @@ index 19874a5..5902417 100644
          sampler_cpu_handle.ptr += descriptor_size_sampler;
          sampler_gpu_handle.ptr += descriptor_size_sampler;
        }
-@@ -4621,7 +4787,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4621,7 +4794,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_samplers_pixel_ = sampler_gpu_handle;
        for (size_t i = 0; i < sampler_count_pixel; ++i) {
@@ -2785,7 +2799,7 @@ index ec0df7c..78a020a 100644
                                                      uint32_t length_allocations) {
    assert_always(
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..1c904f1 100644
+index 001f36b..19e7170 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -2306,8 +2306,6 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
@@ -2809,7 +2823,21 @@ index 001f36b..1c904f1 100644
    auto get_active_swap_dimension = [](uint32_t packet_unscaled, uint32_t source_unscaled,
                                        uint32_t source_scaled) -> uint32_t {
      if (!source_scaled) {
-@@ -4027,6 +4024,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -2407,6 +2404,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
++  // Dante's Inferno: with ultrawide active the guest renders anamorphically
++  // for the target aspect, so report that ratio instead of the video mode's.
++  const double target_aspect = rex::cvar::Query<double>("ultrawide_target_aspect");
++  if (target_aspect > 0.0) {
++    display_height = 720;
++    display_width = uint32_t(std::clamp(target_aspect * 720.0, 1.0, 16384.0));
++  }
+ 
+   presenter->RefreshGuestOutput(
+       guest_output_width, guest_output_height, display_width, display_height,
+@@ -4027,6 +4031,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
      }
    }
  

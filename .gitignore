@@ -100,6 +100,7 @@ launcher/**/*.suo
 launcher_test/
 launcher-release/
 alpha-release/
+beta-release/
 
 # --- Source icon assets (keep ICO, ignore PNG source) ---
 !launcher/icon.ico

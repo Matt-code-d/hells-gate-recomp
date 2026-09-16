@@ -11,10 +11,9 @@ out_directory_path = "generated/default"
 includes = []
 
 [[midasm_hook]]
-address = 0x8251DC88
+address = 0x824D6B90
 name = "UltrawideAspectHook"
-registers = ["f29"]
-after_instruction = true
+registers = ["f0"]
 
 [entrypoint.functions.0x8221FE10]
 name = "unresolved_target_8221FE10"

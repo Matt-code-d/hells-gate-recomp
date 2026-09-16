@@ -63,6 +63,10 @@ Source: "banner.jpg"; DestDir: "{app}"; Flags: ignoreversion
 ; ISO extraction tool (bundled, used post-install)
 Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
+; Pre-generated shader caches — seeded into the user shader storage on first
+; launch so the startup preload runs instead of mid-game shader compilation.
+Source: "..\packaging\shader_cache\*"; DestDir: "{app}\shader_cache"; Flags: ignoreversion
+
 ; NOTE: Game data (game/) is NOT included — the user provides their own ISO
 ; and the post-install step extracts it.
 

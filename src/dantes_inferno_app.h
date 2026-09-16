@@ -206,15 +206,7 @@ class DantesInfernoApp : public rex::ReXApp {
     double target_aspect = REXCVAR_GET(ultrawide_target_aspect);
     if (target_aspect > 0.0) {
       g_ultrawide_target_aspect = static_cast<float>(target_aspect);
-      if (target_aspect >= 1.7778) {
-        rex::cvar::SetFlagByName("present_letterbox", "false");
-        REXLOG_INFO("ULTRAWIDE: target_aspect={:.4f}, present_letterbox disabled",
-                    target_aspect);
-      } else {
-        rex::cvar::SetFlagByName("present_letterbox", "true");
-        REXLOG_INFO("ULTRAWIDE: target_aspect={:.4f}, present_letterbox enabled",
-                    target_aspect);
-      }
+      REXLOG_INFO("ULTRAWIDE: target_aspect={:.4f}", target_aspect);
     } else {
       REXLOG_INFO("ULTRAWIDE: disabled (target_aspect={:.4f})", target_aspect);
     }
@@ -239,6 +231,8 @@ class DantesInfernoApp : public rex::ReXApp {
         REXLOG_INFO("DLC-MOD: dumped guest image to {}", dump_path.string());
       }
     }
+
+    SeedShaderStorage();
   }
 
   void OnPostSetup() override {
@@ -253,13 +247,8 @@ class DantesInfernoApp : public rex::ReXApp {
 
     rex::cvar::RegisterChangeCallback("ultrawide_target_aspect",
         [](std::string_view, std::string_view new_value) {
-          double aspect = std::stod(std::string(new_value));
-          g_ultrawide_target_aspect = static_cast<float>(aspect);
-          if (aspect >= 1.7778) {
-            rex::cvar::SetFlagByName("present_letterbox", "false");
-          } else {
-            rex::cvar::SetFlagByName("present_letterbox", "true");
-          }
+          g_ultrawide_target_aspect =
+              static_cast<float>(std::stod(std::string(new_value)));
         });
 
     rex::ui::RegisterBind("bind_exit_game", "Alt+F4",
@@ -409,6 +398,33 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
  private:
+  void SeedShaderStorage() {
+    const std::filesystem::path bundled =
+        rex::filesystem::GetExecutableFolder() / "shader_cache";
+    std::error_code ec;
+    if (!std::filesystem::is_directory(bundled, ec) ||
+        runtime()->cache_root().empty()) {
+      return;
+    }
+    const std::filesystem::path shareable =
+        runtime()->cache_root() / "shaders" / "shareable";
+    std::filesystem::create_directories(shareable, ec);
+    uint32_t seeded = 0;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(bundled, ec)) {
+      if (!entry.is_regular_file()) continue;
+      const std::filesystem::path dst = shareable / entry.path().filename();
+      if (std::filesystem::exists(dst, ec)) continue;
+      if (std::filesystem::copy_file(entry.path(), dst, ec) && !ec) {
+        ++seeded;
+      }
+    }
+    if (seeded) {
+      REXLOG_INFO("Seeded {} shader cache file(s) into {}", seeded,
+                  shareable.string());
+    }
+  }
+
   rex::graphics::CommandProcessor* GetCommandProcessor() {
     auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
     if (auto* dante_sys =
