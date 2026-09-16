@@ -59,7 +59,7 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
       : rex::ui::ImGuiDialog(drawer),
         command_processor_(command_processor),
         last_time_(std::chrono::steady_clock::now()),
-        last_guest_frame_count_(command_processor ? command_processor->counter() : 0) {}
+        last_guest_frame_count_(command_processor ? command_processor->swap_counter() : 0) {}
 
  protected:
   void OnDraw(ImGuiIO& io) override {
@@ -68,7 +68,7 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
     last_time_ = now;
 
     uint64_t current_guest_frames =
-        command_processor_ ? command_processor_->counter() : 0;
+        command_processor_ ? command_processor_->swap_counter() : 0;
     uint64_t frames_delta = current_guest_frames - last_guest_frame_count_;
     last_guest_frame_count_ = current_guest_frames;
 
@@ -256,6 +256,8 @@ class DantesInfernoApp : public rex::ReXApp {
       app_context().RequestDeferredQuit();
     });
 
+    saved_vsync_ = rex::cvar::Query<bool>("vsync");
+
     if (REXCVAR_GET(show_fps_overlay) && imgui_drawer()) {
       fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(),
                                                         GetCommandProcessor());
@@ -278,7 +280,10 @@ class DantesInfernoApp : public rex::ReXApp {
       double target = fast ? 1.0 : 50.0;
       rex::cvar::SetFlagByName("time_scalar", std::to_string(target));
       rex::chrono::Clock::set_guest_time_scalar(target);
-      rex::cvar::SetFlagByName("vsync", fast ? "true" : "false");
+      if (!fast) {
+        saved_vsync_ = rex::cvar::Query<bool>("vsync");
+      }
+      rex::cvar::SetFlagByName("vsync", fast ? (saved_vsync_ ? "true" : "false") : "false");
     });
 
     AutoInstallDlc();
@@ -394,7 +399,7 @@ class DantesInfernoApp : public rex::ReXApp {
     rex::cvar::UnregisterChangeCallbacks("ultrawide_target_aspect");
     fps_overlay_.reset();
     rex::chrono::Clock::set_guest_time_scalar(1.0);
-    rex::cvar::SetFlagByName("vsync", "true");
+    rex::cvar::SetFlagByName("vsync", saved_vsync_ ? "true" : "false");
   }
 
  private:
@@ -437,4 +442,5 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
   std::unique_ptr<FpsOverlayDialog> fps_overlay_;
+  bool saved_vsync_ = true;
 };
