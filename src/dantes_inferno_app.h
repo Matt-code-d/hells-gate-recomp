@@ -58,37 +58,46 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
                             rex::graphics::CommandProcessor* command_processor)
       : rex::ui::ImGuiDialog(drawer),
         command_processor_(command_processor),
-        last_time_(std::chrono::steady_clock::now()),
-        last_guest_frame_count_(command_processor ? command_processor->swap_counter() : 0) {}
+        window_start_(std::chrono::steady_clock::now()),
+        last_guest_frame_count_(command_processor ? command_processor->swap_counter() : 0),
+        last_vblank_count_(command_processor ? command_processor->vblank_counter() : 0) {}
 
  protected:
   void OnDraw(ImGuiIO& io) override {
     auto now = std::chrono::steady_clock::now();
-    auto delta = std::chrono::duration<double, std::milli>(now - last_time_);
-    last_time_ = now;
 
     uint64_t current_guest_frames =
         command_processor_ ? command_processor_->swap_counter() : 0;
-    uint64_t frames_delta = current_guest_frames - last_guest_frame_count_;
+    uint64_t current_vblanks =
+        command_processor_ ? command_processor_->vblank_counter() : 0;
+    window_frames_ += current_guest_frames - last_guest_frame_count_;
+    window_vblanks_ += current_vblanks - last_vblank_count_;
     last_guest_frame_count_ = current_guest_frames;
+    last_vblank_count_ = current_vblanks;
 
-    double interval_ms = delta.count();
-    double guest_fps = 0;
-    double guest_ft_ms = 0;
-    if (frames_delta > 0 && interval_ms > 0) {
-      guest_fps = frames_delta * 1000.0 / interval_ms;
-      guest_ft_ms = interval_ms / frames_delta;
-    }
+    double window_ms =
+        std::chrono::duration<double, std::milli>(now - window_start_).count();
+    if (window_ms >= kWindowMs) {
+      double guest_fps = window_frames_ * 1000.0 / window_ms;
+      double guest_ft_ms = window_frames_ ? window_ms / window_frames_ : 0.0;
+      double vblank_hz = window_vblanks_ * 1000.0 / window_ms;
 
-    frame_history_[history_idx_] = static_cast<float>(guest_ft_ms);
-    history_idx_ = (history_idx_ + 1) % kHistorySize;
+      if (smoothed_fps_ == 0.0) {
+        smoothed_fps_ = guest_fps;
+        smoothed_ft_ = guest_ft_ms;
+        smoothed_vblank_hz_ = vblank_hz;
+      } else {
+        smoothed_fps_ = smoothed_fps_ * 0.5 + guest_fps * 0.5;
+        smoothed_ft_ = smoothed_ft_ * 0.5 + guest_ft_ms * 0.5;
+        smoothed_vblank_hz_ = smoothed_vblank_hz_ * 0.5 + vblank_hz * 0.5;
+      }
 
-    if (smoothed_fps_ == 0.0) {
-      smoothed_fps_ = guest_fps;
-      smoothed_ft_ = guest_ft_ms;
-    } else {
-      smoothed_fps_ = smoothed_fps_ * 0.85 + guest_fps * 0.15;
-      smoothed_ft_ = smoothed_ft_ * 0.85 + guest_ft_ms * 0.15;
+      frame_history_[history_idx_] = static_cast<float>(guest_ft_ms);
+      history_idx_ = (history_idx_ + 1) % kHistorySize;
+
+      window_frames_ = 0;
+      window_vblanks_ = 0;
+      window_start_ = now;
     }
 
     ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_Always);
@@ -117,6 +126,10 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
       ImGui::Text("%.1f ms", smoothed_ft_);
       ImGui::SetWindowFontScale(1.0f);
 
+      ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(160, 160, 160, 255));
+      ImGui::Text("vblank %.0f Hz", smoothed_vblank_hz_);
+      ImGui::PopStyleColor();
+
       ImGui::Spacing();
       ImGui::PlotLines("##frametime", frame_history_.data(),
                        static_cast<int>(kHistorySize),
@@ -129,13 +142,18 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
 
  private:
   static constexpr size_t kHistorySize = 120;
+  static constexpr double kWindowMs = 250.0;
   std::array<float, kHistorySize> frame_history_{};
   size_t history_idx_ = 0;
   rex::graphics::CommandProcessor* command_processor_;
-  std::chrono::steady_clock::time_point last_time_;
+  std::chrono::steady_clock::time_point window_start_;
   uint64_t last_guest_frame_count_;
+  uint64_t last_vblank_count_;
+  uint64_t window_frames_ = 0;
+  uint64_t window_vblanks_ = 0;
   double smoothed_fps_ = 0.0;
   double smoothed_ft_ = 0.0;
+  double smoothed_vblank_hz_ = 0.0;
 };
 
 class DantesInfernoApp : public rex::ReXApp {
