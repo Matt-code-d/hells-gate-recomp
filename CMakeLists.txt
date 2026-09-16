@@ -10,6 +10,11 @@ if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
 endif()
 
 option(DANTESINFERNO_NATIVE_RENDERER "Build native DiligentCore/Vulkan renderer" ON)
+option(DANTESINFERNO_FIDELITYFX "Enable AMD FidelityFX present effects (CAS/FSR)" ON)
+
+if(DANTESINFERNO_FIDELITYFX)
+    set(REXGLUE_ENABLE_FIDELITYFX ON CACHE BOOL "Enable AMD FidelityFX integration" FORCE)
+endif()
 
 if(DANTESINFERNO_NATIVE_RENDERER)
     # dante_gpu compiles the SDK's Vulkan backend in-process; the Vulkan UI

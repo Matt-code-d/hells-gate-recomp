@@ -25,12 +25,12 @@ namespace DantesInferno
     public static class DisplayOptions
     {
         public const int GuestBaseHeight = 720;
-        public const int MinScale = 1;
+        public const int MinScale = 0; // 0 = auto (native_render_scale)
         public const int MaxScale = 3;
         public const double NativeAspect = 1.7778;
 
         public const string RendererNative = "native";
-        public const string RendererReXGlue = "rexglue";
+        public const string RendererReXGlue = "xenos";
 
         [DllImport("user32.dll")]
         private static extern int GetSystemMetrics(int nIndex);
@@ -107,7 +107,15 @@ namespace DantesInferno
             if (aspect == null)
                 aspect = ClassifyAspect(NativeAspect);
 
-            for (int scale = MinScale; scale <= MaxScale; scale++)
+            options.Add(new DisplayModeOption
+            {
+                Label = "Auto (match display height)",
+                Scale = 0,
+                Width = 0,
+                Height = 0,
+            });
+
+            for (int scale = 1; scale <= MaxScale; scale++)
             {
                 int height = GuestBaseHeight * scale;
                 int width = RoundToEven(aspect.Value * height);
@@ -145,6 +153,31 @@ namespace DantesInferno
             return scale;
         }
 
+        public static string NormalizePresentEffect(string effect)
+        {
+            if (string.IsNullOrWhiteSpace(effect))
+                return "bilinear";
+            string lowered = effect.ToLowerInvariant();
+            switch (lowered)
+            {
+                case "bilinear":
+                case "bilinear_dither":
+                case "cas_sharpen":
+                case "cas_sharpen_dither":
+                case "cas_resample":
+                case "cas_resample_dither":
+                case "fsr_easu":
+                case "fsr_rcas":
+                case "fsr_rcas_dither":
+                    return lowered;
+                // Friendly aliases mapped to concrete cvar values
+                case "cas": return "cas_sharpen";
+                case "fsr": return "fsr_easu";
+                default:
+                    return "bilinear";
+            }
+        }
+
         public static string NormalizeRenderer(string renderer)
         {
             if (!string.IsNullOrEmpty(renderer) &&
@@ -174,30 +207,44 @@ namespace DantesInferno
             args.Add("--render_target_path_d3d12=rov");
 
             int scale = ClampScale(config.ResolutionScale);
-            if (scale > 1)
+            if (scale == 0)
+                args.Add("--native_render_scale=auto");
+            else if (scale > 1)
                 args.Add(string.Format(CultureInfo.InvariantCulture, "--resolution_scale={0}", scale));
+
+            args.Add("--renderer=" + renderer);
+
+            if (!string.IsNullOrEmpty(config.VulkanRenderPath) &&
+                renderer == RendererNative)
+            {
+                args.Add(string.Format("--render_target_path_vulkan={0}", config.VulkanRenderPath));
+            }
 
             if (!string.IsNullOrEmpty(config.SwapPostEffect) && config.SwapPostEffect != "none")
                 args.Add(string.Format("--swap_post_effect={0}", config.SwapPostEffect));
 
+            args.Add(string.Format("--present_effect={0}", NormalizePresentEffect(config.PresentEffect)));
+
+            if (config.PresentDither)
+                args.Add("--present_dither=true");
+
+            if (config.ShowFpsOverlay)
+                args.Add("--show_fps_overlay=true");
+
             if (config.AnisotropicOverride >= 0)
                 args.Add(string.Format(CultureInfo.InvariantCulture, "--anisotropic_override={0}", config.AnisotropicOverride));
 
-            args.Add("--vsync=true");
-            args.Add("--d3d12_host_vsync=true");
+            args.Add(string.Format("--vsync={0}", config.VSync.ToString().ToLowerInvariant()));
+            args.Add(string.Format("--d3d12_host_vsync={0}", config.VSync.ToString().ToLowerInvariant()));
             args.Add("--video_mode_refresh_rate=60");
+
+            args.Add(string.Format("--fullscreen={0}", config.Fullscreen.ToString().ToLowerInvariant()));
 
             args.Add("--input_backend=" + config.InputBackend);
 
             if (!aspect.IsNative)
                 args.Add(string.Format(CultureInfo.InvariantCulture,
                     "--ultrawide_target_aspect={0}", FormatAspectValue(aspect.Value)));
-
-            if (renderer == RendererNative)
-            {
-                args.Add("--use_native_presenter=true");
-                args.Add("--use_gpu_interop=true");
-            }
 
             args.Add(loggingEnabled ? "--log_level=info" : "--log_level=off");
 

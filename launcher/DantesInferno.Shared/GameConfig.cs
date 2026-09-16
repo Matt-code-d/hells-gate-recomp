@@ -127,7 +127,7 @@ namespace DantesInferno
         public int ResolutionScale
         {
             get { return Get("resolution_scale", 1); }
-            set { Set("resolution_scale", Math.Max(1, Math.Min(8, value))); }
+            set { Set("resolution_scale", Math.Max(0, Math.Min(8, value))); }
         }
 
         public int AnisotropicOverride
@@ -140,6 +140,30 @@ namespace DantesInferno
         {
             get { return this["swap_post_effect"] ?? "none"; }
             set { this["swap_post_effect"] = value; }
+        }
+
+        public string PresentEffect
+        {
+            get { return this["present_effect"] ?? "bilinear"; }
+            set { this["present_effect"] = value; }
+        }
+
+        public bool PresentDither
+        {
+            get { return Get("present_dither", false); }
+            set { Set("present_dither", value); }
+        }
+
+        public bool ShowFpsOverlay
+        {
+            get { return Get("show_fps_overlay", false); }
+            set { Set("show_fps_overlay", value); }
+        }
+
+        public string VulkanRenderPath
+        {
+            get { return this["render_target_path_vulkan"] ?? ""; }
+            set { this["render_target_path_vulkan"] = value; }
         }
 
         public bool VSync

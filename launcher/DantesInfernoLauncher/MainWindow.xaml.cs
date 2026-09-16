@@ -131,13 +131,25 @@ namespace DantesInferno.Launcher
             var rendererOptions = new List<KeyValuePair<string, string>>
             {
                 new KeyValuePair<string, string>("ReXGlue (D3D12)", DisplayOptions.RendererReXGlue),
-                new KeyValuePair<string, string>("Native (Vulkan, experimental)", DisplayOptions.RendererNative),
+                new KeyValuePair<string, string>("Native (Vulkan)", DisplayOptions.RendererNative),
             };
             RendererCombo.ItemsSource = rendererOptions;
             RendererCombo.DisplayMemberPath = "Key";
             RendererCombo.SelectedValuePath = "Value";
             string renderer = DisplayOptions.NormalizeRenderer(_config.Renderer);
             RendererCombo.SelectedIndex = renderer == DisplayOptions.RendererNative ? 1 : 0;
+
+            var accuracyOptions = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("Automatic (host render targets)", ""),
+                new KeyValuePair<string, string>("EDRAM (FSI)", "fsi"),
+            };
+            RenderAccuracyCombo.ItemsSource = accuracyOptions;
+            RenderAccuracyCombo.DisplayMemberPath = "Key";
+            RenderAccuracyCombo.SelectedValuePath = "Value";
+            string accuracy = _config.VulkanRenderPath ?? "";
+            int accuracyIndex = accuracyOptions.FindIndex(o => o.Value == accuracy);
+            RenderAccuracyCombo.SelectedIndex = accuracyIndex < 0 ? 0 : accuracyIndex;
 
             AAModeCombo.ItemsSource = new List<string> { "Off", "FXAA", "FXAA Extreme" };
             switch (_config.SwapPostEffect)
@@ -148,6 +160,20 @@ namespace DantesInferno.Launcher
                 default: AAModeCombo.SelectedIndex = 0; break;
             }
 
+            var postProcessingOptions = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("Bilinear (default)", "bilinear"),
+                new KeyValuePair<string, string>("CAS (sharpen)", "cas_sharpen"),
+                new KeyValuePair<string, string>("FSR EASU (upscale)", "fsr_easu"),
+                new KeyValuePair<string, string>("FSR RCAS (sharpen)", "fsr_rcas"),
+            };
+            PostProcessingCombo.ItemsSource = postProcessingOptions;
+            PostProcessingCombo.DisplayMemberPath = "Key";
+            PostProcessingCombo.SelectedValuePath = "Value";
+            string presentEffect = DisplayOptions.NormalizePresentEffect(_config.PresentEffect);
+            int ppIndex = postProcessingOptions.FindIndex(o => o.Value == presentEffect);
+            PostProcessingCombo.SelectedIndex = ppIndex < 0 ? 0 : ppIndex;
+
             AnisoCombo.ItemsSource = new List<string> { "Default", "1x", "2x", "4x", "8x", "16x" };
             int aniso = _config.AnisotropicOverride;
             if (aniso < 0) aniso = 0;
@@ -156,6 +182,9 @@ namespace DantesInferno.Launcher
             AnisoCombo.SelectedIndex = aniso;
 
             FullscreenCheck.IsChecked = _config.Fullscreen;
+            VSyncCheck.IsChecked = _config.VSync;
+            FpsOverlayCheck.IsChecked = _config.ShowFpsOverlay;
+            DitherCheck.IsChecked = _config.PresentDither;
 
             ControllerFixCheck.IsChecked = _config.InputBackend.Equals("sdl", StringComparison.OrdinalIgnoreCase);
 
@@ -506,6 +535,9 @@ namespace DantesInferno.Launcher
             _config.Renderer = DisplayOptions.NormalizeRenderer(
                 rendererPair.HasValue ? rendererPair.Value.Value : null);
 
+            var accuracyPair = RenderAccuracyCombo.SelectedItem as KeyValuePair<string, string>?;
+            _config.VulkanRenderPath = accuracyPair.HasValue ? accuracyPair.Value.Value : "";
+
             int aaIdx = AAModeCombo.SelectedIndex;
             switch (aaIdx)
             {
@@ -513,6 +545,12 @@ namespace DantesInferno.Launcher
                 case 2: _config.SwapPostEffect = "fxaa_extreme"; break;
                 default: _config.SwapPostEffect = "none"; break;
             }
+
+            var postProcessingPair = PostProcessingCombo.SelectedItem as KeyValuePair<string, string>?;
+            _config.PresentEffect = postProcessingPair.HasValue ? postProcessingPair.Value.Value : "bilinear";
+
+            _config.PresentDither = DitherCheck.IsChecked ?? false;
+            _config.ShowFpsOverlay = FpsOverlayCheck.IsChecked ?? false;
 
             int anisoIdx = AnisoCombo.SelectedIndex;
             if (anisoIdx <= 0)
@@ -524,6 +562,7 @@ namespace DantesInferno.Launcher
             }
 
             _config.Fullscreen = FullscreenCheck.IsChecked ?? true;
+            _config.VSync = VSyncCheck.IsChecked ?? true;
 
             _config.InputBackend = (ControllerFixCheck.IsChecked ?? false) ? "sdl" : "xinput";
 
@@ -736,9 +775,13 @@ namespace DantesInferno.Launcher
 
         private void ApplyRecommended_Click(object sender, RoutedEventArgs e)
         {
-            _config.ResolutionScale = 2;
+            _config.ResolutionScale = 0;
             _config.Renderer = DisplayOptions.RendererNative;
-            _config.SwapPostEffect = "fxaa";
+            _config.VulkanRenderPath = "";
+            _config.SwapPostEffect = "none";
+            _config.PresentEffect = "cas_sharpen";
+            _config.PresentDither = false;
+            _config.ShowFpsOverlay = false;
             _config.AnisotropicOverride = -1;
             _config.VSync = true;
             _config.Fullscreen = true;

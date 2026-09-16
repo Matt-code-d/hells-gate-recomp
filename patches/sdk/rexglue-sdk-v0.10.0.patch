@@ -1,3 +1,28 @@
+diff --git a/cmake/rexglue_fidelityfx.cmake b/cmake/rexglue_fidelityfx.cmake
+index af35fa8..0ab179e 100644
+--- a/cmake/rexglue_fidelityfx.cmake
++++ b/cmake/rexglue_fidelityfx.cmake
+@@ -58,6 +58,20 @@ if(NOT fidelityfx_POPULATED)
+     FetchContent_Populate(fidelityfx)
+ endif()
+ 
++# llvm-rc does not accept UTF-16 .rc files; the FidelityFX SDK ships the
++# ffx_api_dll.rc with a BOM on some hosts. Convert it to UTF-8 once after
++# population so the resource compiler can process it.
++if(WIN32)
++    set(_ffx_dll_rc "${fidelityfx_SOURCE_DIR}/ffx-api/src/resource/ffx_api_dll.rc")
++    if(EXISTS "${_ffx_dll_rc}")
++        execute_process(
++            COMMAND powershell -NoProfile -Command
++                "$rc = '${_ffx_dll_rc}'; $bytes = [System.IO.File]::ReadAllBytes($rc); if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $text = [System.IO.File]::ReadAllText($rc, [System.Text.Encoding]::Unicode); [System.IO.File]::WriteAllText($rc, $text, [System.Text.Encoding]::UTF8) }"
++            RESULT_VARIABLE _ffx_dll_rc_conversion
++        )
++    endif()
++endif()
++
+ set(REXGLUE_FIDELITYFX_SOURCE_DIR "${fidelityfx_SOURCE_DIR}" CACHE INTERNAL
+     "Root of the fetched FidelityFX SDK source tree")
+ 
 diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
 index da8e432..f6028a4 100644
 --- a/include/rex/graphics/command_processor.h
