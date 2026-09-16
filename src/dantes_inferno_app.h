@@ -10,13 +10,20 @@
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/graphics_system.h>
 #include <rex/system/function_dispatcher.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xam/content_manager.h>
 #include <rex/logging/macros.h>
 
 #include <array>
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <string>
 #include <thread>
+#include <vector>
 
 REXCVAR_DEFINE_DOUBLE(time_scalar, 1.0, "Gameplay",
                       "Guest time scaling factor (1.0 = normal, 50.0 = fast-forward)");
@@ -30,6 +37,18 @@ REXCVAR_DEFINE_STRING(glyph_family, "auto", "UI",
 REXCVAR_DEFINE_DOUBLE(ultrawide_target_aspect, 0.0, "Graphics",
                       "Target aspect ratio for ultrawide (0=disabled, 1.7778=16:9, "
                       "2.3889=21:9, 3.5556=32:9)");
+
+REXCVAR_DEFINE_BOOL(dlc_trace, false, "Diagnostics",
+                    "Trace DLC module reads, guest callers, and activation (requires restart).")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(dlc_dump_image, false, "Diagnostics",
+                    "Dump the loaded guest image for offline DLC analysis (requires restart).")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_STRING(dlc_source_path, "dlc", "Content",
+                      "Folder scanned for DLC packages to auto-install on launch. "
+                      "If empty or missing, the game runs without DLC.");
 
 class FpsOverlayDialog : public rex::ui::ImGuiDialog {
  public:
@@ -206,6 +225,18 @@ class DantesInfernoApp : public rex::ReXApp {
     const bool is_tu2 = dispatcher && dispatcher->GetFunction(0x82879110);
     uint32_t slot = is_tu2 ? 0x82CE68E4u : 0x82B101E4u;
     *reinterpret_cast<uint32_t*>(membase + slot) = 0u;
+
+    if (REXCVAR_GET(dlc_dump_image)) {
+      std::filesystem::path dump_path =
+          std::filesystem::current_path() / "logs" / "guest_image.bin";
+      std::filesystem::create_directories(dump_path.parent_path());
+      FILE* f = fopen(dump_path.string().c_str(), "wb");
+      if (f) {
+        fwrite(membase + 0x82000000, 1, 0xD70000, f);
+        fclose(f);
+        REXLOG_INFO("DLC-MOD: dumped guest image to {}", dump_path.string());
+      }
+    }
   }
 
   void OnPostSetup() override {
@@ -265,6 +296,109 @@ class DantesInfernoApp : public rex::ReXApp {
       rex::cvar::SetFlagByName("vsync", fast ? "true" : "false");
     });
 
+    AutoInstallDlc();
+  }
+
+  void AutoInstallDlc() {
+    auto* kernel_state = runtime() ? runtime()->kernel_state() : nullptr;
+    auto* content_manager = kernel_state ? kernel_state->content_manager() : nullptr;
+    if (!content_manager) {
+      REXLOG_WARN("DLC auto-install skipped: content manager unavailable");
+      return;
+    }
+
+    std::string dlc_path = REXCVAR_GET(dlc_source_path);
+    if (dlc_path.empty()) dlc_path = "dlc";
+    std::filesystem::path root(dlc_path);
+    if (!std::filesystem::exists(root)) {
+      REXLOG_INFO("DLC folder not found ({}); running without DLC", dlc_path);
+      return;
+    }
+
+    auto is_hex_name = [](const std::string& s, size_t len) {
+      return s.size() == len &&
+             s.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos;
+    };
+
+    std::filesystem::path marker = root / ".installed";
+    std::set<std::string> installed;
+    if (std::filesystem::exists(marker)) {
+      std::ifstream in(marker);
+      std::string line;
+      while (std::getline(in, line)) {
+        if (!line.empty()) installed.insert(line);
+      }
+    }
+
+    // Content layout is user_data_root/<xuid>/<title_id>/<content_type>/.
+    // Mirror pre-extracted content trees (e.g. copied from Xenia's content
+    // folder) directly; loose files are treated as STFS packages.
+    const auto& user_root = user_data_root();
+    const auto content_root = user_root / "0000000000000000";
+
+    std::vector<std::filesystem::path> packages;
+    int mirrored_dirs = 0;
+    for (auto& entry : std::filesystem::directory_iterator(root)) {
+      if (entry.is_regular_file()) {
+        if (entry.path().filename() != ".installed") {
+          packages.push_back(entry.path());
+        }
+        continue;
+      }
+      if (!entry.is_directory()) continue;
+
+      const auto name = entry.path().filename().string();
+      std::filesystem::path dest;
+      if (is_hex_name(name, 16)) {
+        dest = user_root / name;
+      } else if (is_hex_name(name, 8) &&
+                 std::filesystem::exists(entry.path() / "Headers")) {
+        dest = content_root / name;
+      }
+      if (!dest.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(dest, ec);
+        std::filesystem::copy(entry.path(), dest,
+            std::filesystem::copy_options::recursive |
+            std::filesystem::copy_options::update_existing, ec);
+        if (ec) {
+          REXLOG_WARN("DLC content mirror failed for {}: {}", name, ec.message());
+        } else {
+          REXLOG_INFO("Mirrored DLC content directory: {}", name);
+          mirrored_dirs++;
+        }
+        continue;
+      }
+
+      for (auto& sub : std::filesystem::recursive_directory_iterator(entry.path())) {
+        if (sub.is_regular_file()) packages.push_back(sub.path());
+      }
+    }
+
+    if (packages.empty() && mirrored_dirs == 0) {
+      REXLOG_INFO("DLC folder empty ({}); running without DLC", dlc_path);
+      return;
+    }
+
+    int new_installed = 0;
+    for (auto& pkg : packages) {
+      auto rel = std::filesystem::relative(pkg, root).string();
+      if (installed.count(rel)) continue;
+
+      REXLOG_INFO("Installing DLC package: {}", rel);
+      auto result = content_manager->InstallContent(pkg);
+      if (XSUCCEEDED(result)) {
+        installed.insert(rel);
+        new_installed++;
+        std::ofstream out(marker, std::ios::app);
+        out << rel << "\n";
+      } else {
+        REXLOG_WARN("DLC install failed for {}: 0x{:08X}", rel, result);
+      }
+    }
+
+    REXLOG_INFO("DLC auto-install complete: {} new packages, {} mirrored dirs, {} total",
+                new_installed, mirrored_dirs, installed.size());
   }
 
   void OnShutdown() override {
