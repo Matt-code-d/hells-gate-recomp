@@ -1,3 +1,21 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e432..ad4f295 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -221,6 +221,13 @@ class CommandProcessor {
+                          IndexBufferInfo* index_buffer_info, bool major_mode_explicit) = 0;
+   virtual bool IssueCopy() = 0;
+ 
++  // Diagnostic: logs draws whose vertex fetches would read outside the fetch
++  // constant's declared bounds. On Xenos, OOB vfetch words return 0; the
++  // shared-memory loads in the translators return adjacent guest memory
++  // instead, corrupting vertex data.
++  void TraceVertexFetchOOB(const Shader& vertex_shader, uint32_t index_count,
++                           const IndexBufferInfo* index_buffer_info);
++
+   // "Actual" is for the command processor thread, to be read by the
+   // implementations.
+   SwapPostEffect GetActualSwapPostEffect() const { return swap_post_effect_actual_; }
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
 index 96d362b..f83f172 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
@@ -967,8 +985,128 @@ index 163c257..c01e0e3 100644
    return nullptr;
  }
  
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..43a0ba7 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -14,6 +14,7 @@
+ #include <cmath>
+ #include <cstring>
+ #include <string_view>
++#include <unordered_set>
+ 
+ #include <fmt/format.h>
+ 
+@@ -24,6 +25,7 @@
+ #include <rex/graphics/command_processor.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/graphics_system.h>
++#include <rex/graphics/pipeline/shader/shader.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/sampler_info.h>
+ #include <rex/graphics/xenos.h>
+@@ -37,6 +39,11 @@
+ 
+ REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
+ 
++REXCVAR_DEFINE_BOOL(vfetch_oob_trace, true, "Diagnostics",
++                    "Log draws whose vertex fetches read outside the declared "
++                    "buffer bounds. Xenos returns 0 for OOB vfetch words; "
++                    "shared-memory loads return adjacent guest memory.");
++
+ REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
+                     "Refresh page-valid state from GPU-written memory at frame end. "
+                     "Disable for minor CPU overhead reduction, but may break memory coherency.")
+@@ -1282,6 +1289,87 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
+   return true;
+ }
+ 
++void CommandProcessor::TraceVertexFetchOOB(const Shader& vertex_shader,
++                                           uint32_t index_count,
++                                           const IndexBufferInfo* index_buffer_info) {
++  // Highest index the vertex shader can fetch for this draw. Non-indexed
++  // draws use the vertex counter; indexed draws scan the guest index buffer.
++  uint64_t max_index = index_count ? uint64_t(index_count - 1) : 0;
++  if (index_buffer_info && index_buffer_info->count) {
++    const uint32_t index_size =
++        index_buffer_info->format == xenos::IndexFormat::kInt16 ? 2 : 4;
++    const uint8_t* index_data =
++        memory_->TranslatePhysical<uint8_t*>(index_buffer_info->guest_base);
++    if (!index_data) {
++      return;
++    }
++    max_index = 0;
++    const uint32_t count = std::min<uint32_t>(
++        index_buffer_info->count, uint32_t(index_buffer_info->length / index_size));
++    const uint32_t restart = index_size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
++    for (uint32_t i = 0; i < count; ++i) {
++      uint32_t index;
++      if (index_size == 2) {
++        uint16_t raw;
++        std::memcpy(&raw, index_data + i * 2, 2);
++        index = xenos::GpuSwap(raw, index_buffer_info->endianness);
++      } else {
++        uint32_t raw;
++        std::memcpy(&raw, index_data + i * 4, 4);
++        index = xenos::GpuSwap(raw, index_buffer_info->endianness);
++      }
++      if (index != restart) {
++        max_index = std::max<uint64_t>(max_index, index);
++      }
++    }
++  }
++
++  static std::unordered_set<uint64_t> reported;
++  const RegisterFile& regs = *register_file_;
++  for (const auto& binding : vertex_shader.vertex_bindings()) {
++    const xenos::xe_gpu_vertex_fetch_t vfetch =
++        regs.GetVertexFetch(binding.fetch_constant);
++    if (vfetch.type != xenos::FetchConstantType::kVertex || !vfetch.size) {
++      continue;
++    }
++
++    uint64_t max_word_end = 0;
++    int64_t min_word = 0;
++    for (const auto& attribute : binding.attributes) {
++      const auto& fetch = attribute.fetch_instr;
++      const uint32_t needed = xenos::GetVertexFormatNeededWords(
++          fetch.attributes.data_format, fetch.result.GetUsedResultComponents());
++      min_word = std::min<int64_t>(min_word, fetch.attributes.offset);
++      const int64_t end = int64_t(fetch.attributes.offset) + int64_t(needed);
++      if (end > 0) {
++        max_word_end = std::max(max_word_end, uint64_t(end));
++      }
++    }
++
++    const uint64_t last_word = max_index * binding.stride_words + max_word_end;
++    const bool oob_high = last_word > vfetch.size;
++    const bool oob_low = min_word < 0;
++    if (!oob_high && !oob_low) {
++      continue;
++    }
++
++    // Report each unique binding configuration once per session.
++    const uint64_t signature = (uint64_t(binding.fetch_constant) << 48) ^
++                               (uint64_t(vfetch.dword_0) << 20) ^
++                               (uint64_t(vfetch.size) << 8) ^
++                               binding.stride_words;
++    if (!reported.insert(signature).second) {
++      continue;
++    }
++    REXGPU_WARN(
++        "VFETCH-OOB: indices={} fetch={} base=0x{:08X} size={}w stride={}w "
++        "max_index={} -> last word {} of {}{}",
++        index_count, binding.fetch_constant, vfetch.address << 2, vfetch.size,
++        binding.stride_words, max_index, last_word, vfetch.size,
++        oob_low ? " (also underflows below base)" : "");
++  }
++}
++
+ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32_t packet,
+                                               const char* opcode_name, uint32_t viz_query_condition,
+                                               uint32_t count_remaining) {
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..bab7836 100644
+index 19874a5..efc6e70 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -14,6 +14,7 @@
@@ -1073,7 +1211,18 @@ index 19874a5..bab7836 100644
    // Bind the pipeline after configuring it and doing everything that may bind
    // other pipelines.
    if (current_guest_pipeline_ != pipeline_handle) {
-@@ -2626,6 +2691,54 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2524,6 +2589,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     }
+   }
+ 
++  if (REXCVAR_GET(vfetch_oob_trace)) {
++    TraceVertexFetchOOB(*vertex_shader, index_count, index_buffer_info);
++  }
++
+   // Gather memexport ranges and ensure the heaps for them are resident, and
+   // also load the data surrounding the export and to fill the regions that
+   // won't be modified by the shaders.
+@@ -2626,6 +2695,54 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
        shared_memory_->UseForReading();
      }
      SubmitBarriers();
@@ -1128,7 +1277,7 @@ index 19874a5..bab7836 100644
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
      deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
-@@ -2685,6 +2798,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2685,6 +2802,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
        shared_memory_->UseForReading();
      }
      SubmitBarriers();
@@ -1142,7 +1291,7 @@ index 19874a5..bab7836 100644
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
      deferred_command_list_.D3DDrawIndexedInstanced(
-@@ -3245,6 +3365,26 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
+@@ -3245,6 +3369,26 @@ void D3D12CommandProcessor::LogDeviceRemovalDiagnostics(ID3D12Device* device, HR
    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&page_fault)) && page_fault.PageFaultVA != 0) {
      REXGPU_ERROR("DRED page fault at VA 0x{:016X}", page_fault.PageFaultVA);
    }
@@ -1169,7 +1318,7 @@ index 19874a5..bab7836 100644
  }
  
  bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
-@@ -3830,6 +3970,15 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+@@ -3830,6 +3974,15 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
      uint32_t texture_signs_mask = uint32_t(0b11111111) << texture_signs_shift;
      dirty |= (texture_signs_uint & texture_signs_mask) != texture_signs_shifted;
      texture_signs_uint = (texture_signs_uint & ~texture_signs_mask) | texture_signs_shifted;
@@ -1185,7 +1334,7 @@ index 19874a5..bab7836 100644
      textures_resolution_scaled |=
          uint32_t(texture_cache_->IsActiveTextureResolutionScaled(texture_index)) << texture_index;
    }
-@@ -3893,6 +4042,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+@@ -3893,6 +4046,12 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
        system_constants_.edram_rt_keep_mask[i][0] = rt_keep_masks[i][0];
        dirty |= system_constants_.edram_rt_keep_mask[i][1] != rt_keep_masks[i][1];
        system_constants_.edram_rt_keep_mask[i][1] = rt_keep_masks[i][1];
@@ -1198,7 +1347,7 @@ index 19874a5..bab7836 100644
        if (rt_keep_masks[i][0] != UINT32_MAX || rt_keep_masks[i][1] != UINT32_MAX) {
          uint32_t rt_base_dwords_scaled = color_info.color_base * edram_tile_dwords_scaled;
          dirty |= system_constants_.edram_rt_base_dwords_scaled[i] != rt_base_dwords_scaled;
-@@ -4154,6 +4309,26 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4154,6 +4313,26 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
      }
      cbuffer_binding_float_pixel_.up_to_date = true;
      current_graphics_root_up_to_date_ &= ~(1u << root_parameter_float_constants_pixel);
@@ -1225,7 +1374,7 @@ index 19874a5..bab7836 100644
    }
    if (!cbuffer_binding_bool_loop_.up_to_date) {
      constexpr uint32_t kBoolLoopConstantsSize = (8 + 32) * sizeof(uint32_t);
-@@ -4349,9 +4524,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4349,9 +4528,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                  break;
                }
                sampler_index = sampler_bindless_heap_allocated_++;
@@ -1238,7 +1387,7 @@ index 19874a5..bab7836 100644
                texture_cache_bindless_sampler_map_.emplace(sampler_parameters.value, sampler_index);
              }
              current_sampler_bindless_indices_vertex_[j] = sampler_index;
-@@ -4375,9 +4550,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4375,9 +4554,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                  break;
                }
                sampler_index = sampler_bindless_heap_allocated_++;
@@ -1251,7 +1400,7 @@ index 19874a5..bab7836 100644
                texture_cache_bindless_sampler_map_.emplace(sampler_parameters.value, sampler_index);
              }
              current_sampler_bindless_indices_pixel_[j] = sampler_index;
-@@ -4589,6 +4764,11 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4589,6 +4768,11 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_textures_pixel_ = view_gpu_handle;
        for (size_t i = 0; i < texture_count_pixel; ++i) {
@@ -1263,7 +1412,7 @@ index 19874a5..bab7836 100644
          texture_cache_->WriteActiveTextureBindfulSRV((*textures_pixel)[i], view_cpu_handle);
          view_cpu_handle.ptr += descriptor_size_view;
          view_gpu_handle.ptr += descriptor_size_view;
-@@ -4607,7 +4787,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4607,7 +4791,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_samplers_vertex_ = sampler_gpu_handle;
        for (size_t i = 0; i < sampler_count_vertex; ++i) {
@@ -1273,7 +1422,7 @@ index 19874a5..bab7836 100644
          sampler_cpu_handle.ptr += descriptor_size_sampler;
          sampler_gpu_handle.ptr += descriptor_size_sampler;
        }
-@@ -4621,7 +4802,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4621,7 +4806,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                    RootBindfulExtraParameterIndices::kUnavailable);
        gpu_handle_samplers_pixel_ = sampler_gpu_handle;
        for (size_t i = 0; i < sampler_count_pixel; ++i) {
@@ -2754,6 +2903,21 @@ index ec0df7c..78a020a 100644
  bool SharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_allocations,
                                                      uint32_t length_allocations) {
    assert_always(
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..1a4db86 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -4027,6 +4027,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+     }
+   }
+ 
++  if (REXCVAR_GET(vfetch_oob_trace)) {
++    TraceVertexFetchOOB(*vertex_shader, index_count, index_buffer_info);
++  }
++
+   // Synchronize the memory pages backing memory scatter export streams, and
+   // calculate the range that includes the streams for the buffer barrier.
+   uint32_t memexport_extent_start = UINT32_MAX, memexport_extent_end = 0;
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
 index 3f9422d..55f07a6 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
