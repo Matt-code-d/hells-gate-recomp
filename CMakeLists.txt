@@ -9,6 +9,14 @@ if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     add_compile_options(-mssse3 -msse4.1)
 endif()
 
+option(DANTESINFERNO_NATIVE_RENDERER "Build native DiligentCore/Vulkan renderer" ON)
+
+if(DANTESINFERNO_NATIVE_RENDERER)
+    # dante_gpu compiles the SDK's Vulkan backend in-process; the Vulkan UI
+    # objects (provider/presenter/device) must exist inside rexruntime.
+    set(REXGLUE_USE_VULKAN ON CACHE BOOL "Enable Vulkan graphics backend" FORCE)
+endif()
+
 include(generated/rexglue.cmake)
 
 if(REXSDK_DIR)
@@ -44,11 +52,13 @@ elseif(TARGET imgui)
     target_link_libraries(dantes_inferno PRIVATE imgui)
 endif()
 
-option(DANTESINFERNO_NATIVE_RENDERER "Build native DiligentCore/Vulkan renderer" ON)
-
 if(DANTESINFERNO_NATIVE_RENDERER)
-    set(DILIGENT_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/diligent-core"
-        CACHE PATH "Path to DiligentCore source tree")
+    # Resolve relative/stale cache values against the source tree so a bad
+    # cached path can never break configure.
+    if(NOT DILIGENT_CORE_DIR OR NOT IS_ABSOLUTE "${DILIGENT_CORE_DIR}")
+        set(DILIGENT_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/diligent-core"
+            CACHE PATH "Path to DiligentCore source tree" FORCE)
+    endif()
 
     if(NOT EXISTS "${DILIGENT_CORE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
@@ -63,6 +73,13 @@ if(DANTESINFERNO_NATIVE_RENDERER)
     set(DILIGENT_NO_HLSL ON CACHE BOOL "Disable HLSL support in DiligentCore" FORCE)
     set(DILIGENT_INSTALL_CORE OFF CACHE BOOL "Don't install DiligentCore" FORCE)
     set(DILIGENT_BUILD_TESTS OFF CACHE BOOL "Don't build DiligentCore tests" FORCE)
+
+    # The SDK's Vulkan stack (REXGLUE_USE_VULKAN) brings its own glslang /
+    # SPIRV-Headers targets whose names collide with DiligentCore's vendored
+    # copies (target names are global). DiligentCore is therefore built without
+    # glslang/SPIRV-Tools; HLSL is compiled to SPIR-V at runtime via the SDK's
+    # glslang in native_device.cpp instead.
+    set(DILIGENT_NO_GLSLANG ON CACHE BOOL "Disable glslang in DiligentCore" FORCE)
 
     add_subdirectory("${DILIGENT_CORE_DIR}" "${CMAKE_BINARY_DIR}/diligent-core" EXCLUDE_FROM_ALL)
 
@@ -94,6 +111,95 @@ if(DANTESINFERNO_NATIVE_RENDERER)
         volk::volk
         Vulkan::Headers
     )
+
+    # dante_gpu: the SDK's Xenos graphics backend compiled in-process
+    # (core + SPIR-V + Vulkan), replacing the runtime-loaded rexgpu-xenos.dll
+    # when renderer=native. Source list mirrors src/graphics/CMakeLists.txt
+    # minus plugin_main.cpp and the D3D12/DXBC backend.
+    if(REXSDK_DIR)
+        set(DANTE_GPU_SOURCES
+            # Core GPU types
+            ${REXSDK_DIR}/src/graphics/flags.cpp
+            ${REXSDK_DIR}/src/graphics/register_file.cpp
+            ${REXSDK_DIR}/src/graphics/registers.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/shader.cpp
+            ${REXSDK_DIR}/src/graphics/format/ucode.cpp
+            ${REXSDK_DIR}/src/graphics/sampler_info.cpp
+            # GPU system
+            ${REXSDK_DIR}/src/graphics/graphics_system.cpp
+            ${REXSDK_DIR}/src/graphics/command_processor.cpp
+            ${REXSDK_DIR}/src/graphics/util/draw_extent_estimator.cpp
+            ${REXSDK_DIR}/src/graphics/util/draw.cpp
+            ${REXSDK_DIR}/src/graphics/packet_disassembler.cpp
+            ${REXSDK_DIR}/src/graphics/primitive_processor.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/render_target/cache.cpp
+            ${REXSDK_DIR}/src/graphics/shared_memory.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/texture/cache.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/interpreter.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/translator.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/translator_disasm.cpp
+            # SPIR-V shader translation
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/spirv_builder.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/spirv.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/spirv_translator.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/spirv_translator_alu.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
+            ${REXSDK_DIR}/src/graphics/pipeline/shader/spirv_translator_rb.cpp
+            # Vulkan backend
+            ${REXSDK_DIR}/src/graphics/vulkan/graphics_system.cpp
+            ${REXSDK_DIR}/src/graphics/vulkan/deferred_command_buffer.cpp
+            ${REXSDK_DIR}/src/graphics/vulkan/command_processor.cpp
+            ${REXSDK_DIR}/src/graphics/vulkan/pipeline_cache.cpp
+            ${REXSDK_DIR}/src/graphics/vulkan/primitive_processor.cpp
+            ${REXSDK_DIR}/src/graphics/vulkan/render_target_cache.cpp
+            ${REXSDK_DIR}/src/graphics/vulkan/shader.cpp
+            ${REXSDK_DIR}/src/graphics/vulkan/shared_memory.cpp
+            ${REXSDK_DIR}/src/graphics/vulkan/texture_cache.cpp
+        )
+        add_library(dante_gpu STATIC ${DANTE_GPU_SOURCES})
+        target_include_directories(dante_gpu PRIVATE
+            ${REXSDK_DIR}
+            ${REXSDK_DIR}/thirdparty/renderdoc
+        )
+        target_compile_options(dante_gpu PRIVATE -Wno-unused-variable)
+        target_link_libraries(dante_gpu PRIVATE
+            rex::runtime
+            xxHash::xxhash
+            Vulkan::Headers
+            glslang::SPIRV
+            GPUOpen::VulkanMemoryAllocator
+            glslang
+            MachineIndependent
+            GenericCodeGen
+            OSDependent
+            OGLCompiler
+        )
+        target_link_libraries(dante_native_renderer PRIVATE dante_gpu)
+
+        # glslang for runtime HLSL->SPIR-V compilation in native_device.cpp
+        # (DiligentCore is built with DILIGENT_NO_GLSLANG). ResourceLimits.cpp
+        # provides glslang::DefaultTBuiltInResource, normally built by glslang's
+        # StandAlone dir which ENABLE_GLSLANG_BINARIES=OFF skips.
+        target_sources(dante_native_renderer PRIVATE
+            ${REXSDK_DIR}/thirdparty/glslang/StandAlone/ResourceLimits.cpp
+        )
+        target_include_directories(dante_native_renderer PRIVATE
+            ${REXSDK_DIR}/thirdparty/glslang
+            ${REXSDK_DIR}/thirdparty/glslang/StandAlone
+        )
+        target_link_libraries(dante_native_renderer PRIVATE
+            glslang::SPIRV
+            glslang
+            MachineIndependent
+            GenericCodeGen
+            OSDependent
+            OGLCompiler
+        )
+    else()
+        message(WARNING "dante_gpu requires REXSDK_DIR (SDK source tree); "
+                        "renderer=native will be unavailable")
+    endif()
 
     target_link_libraries(dantes_inferno PRIVATE dante_native_renderer)
     target_compile_definitions(dantes_inferno PRIVATE DANTESINFERNO_NATIVE_RENDERER)

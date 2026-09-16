@@ -75,6 +75,20 @@ index 4d845c7..3d9c5ec 100644
    static constexpr uint32_t kLoadGuestXThreadsPerGroupLog2 = 2;
    static constexpr uint32_t kLoadGuestYBlocksPerGroupLog2 = 5;
  
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index 2cf24c4..3c4b107 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -63,6 +63,9 @@ REXCVAR_DECLARE(bool, force_convert_quad_lists_to_triangle_lists);
+ REXCVAR_DECLARE(bool, force_convert_triangle_fans_to_lists);
+ REXCVAR_DECLARE(int32_t, primitive_processor_cache_min_indices);
+ 
++// GPU Diagnostics
++REXCVAR_DECLARE(bool, vfetch_oob_trace);
++
+ // GPU Debug
+ REXCVAR_DECLARE(bool, gpu_debug_markers);
+ bool IsGpuDebugMarkersEnabled();
 diff --git a/include/rex/graphics/pipeline/shader/dxbc_translator.h b/include/rex/graphics/pipeline/shader/dxbc_translator.h
 index 3b0fd61..336864d 100644
 --- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
@@ -951,6 +965,42 @@ index fdecb6f..646bd88 100644
 +void dataSectionFunctionPointerScan(CodegenContext& ctx);
 +
  }  // namespace rex::codegen
+diff --git a/src/core/cvar.cpp b/src/core/cvar.cpp
+index 228728d..0cc29da 100644
+--- a/src/core/cvar.cpp
++++ b/src/core/cvar.cpp
+@@ -229,7 +229,30 @@ std::optional<size_t> RegisterFlag(FlagEntry entry) {
+   auto& storage = GetRegistryStorage();
+   auto it = index.find(entry.name);
+   if (it != index.end()) {
+-    REXLOG_ERROR("cvar: duplicate registration of '{}'; second registration ignored", entry.name);
++    // A second module may define the same cvar (e.g. a GPU backend compiled
++    // in-process alongside the plugin DLL). Each module owns its own static
++    // storage; merge the duplicate's setter into the existing entry so
++    // registry writes (command line, config, SetFlagByName) reach every copy,
++    // then sync the new storage to the current effective value.
++    FlagEntry& stored = storage[it->second];
++    if (entry.type != FlagType::Command && entry.setter) {
++      auto prev_setter = std::move(stored.setter);
++      auto new_setter = entry.setter;
++      stored.setter = [prev_setter = std::move(prev_setter),
++                       new_setter](std::string_view v) {
++        bool ok = prev_setter ? prev_setter(v) : true;
++        ok = new_setter(v) && ok;
++        return ok;
++      };
++      if (stored.getter) {
++        new_setter(stored.getter());
++      }
++      REXLOG_DEBUG("cvar: merged duplicate registration of '{}'", entry.name);
++    } else {
++      REXLOG_ERROR(
++          "cvar: duplicate registration of '{}'; second registration ignored",
++          entry.name);
++    }
+     return std::nullopt;
+   }
+   size_t pos = storage.size();
 diff --git a/src/filesystem/entry.cpp b/src/filesystem/entry.cpp
 index 163c257..c01e0e3 100644
 --- a/src/filesystem/entry.cpp

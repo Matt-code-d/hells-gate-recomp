@@ -28,13 +28,27 @@
 
 #include <rex/logging/macros.h>
 
+#include <glslang/Public/ShaderLang.h>
+#include <glslang/Include/ResourceLimits.h>
+#include <SPIRV/GlslangToSpv.h>
+
 #include <algorithm>
 #include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
+
+// DiligentCore is built without glslang (DILIGENT_NO_GLSLANG): its vendored
+// glslang/SPIRV-Tools collide with the SDK's equivalents by target name.
+// Shaders are compiled to SPIR-V here with the SDK's glslang instead.
+// DefaultTBuiltInResource lives in StandAlone/ResourceLimits.cpp (compiled
+// into this target); glslang's public headers only declare TBuiltInResource.
+namespace glslang {
+extern const TBuiltInResource DefaultTBuiltInResource;
+}
 
 namespace dante {
 
@@ -269,58 +283,100 @@ void NativeDevice::present(uint32_t sync_interval) {
 }
 
 static const char* kBlitVS = R"(
-struct VSOutput {
-    float4 pos : SV_POSITION;
-    float2 uv  : TEXCOORD0;
-};
-void main(in uint vid : SV_VertexID, out VSOutput Out) {
-    float2 base = float2((vid == 1) ? 3.0 : -1.0,
-                         (vid == 2) ? 3.0 : -1.0);
-    Out.pos = float4(base, 0.0, 1.0);
-    Out.uv = float2((vid == 1) ? 2.0 : 0.0,
-                    (vid == 2) ? 2.0 : 0.0);
+#version 450
+layout(location = 0) out vec2 out_uv;
+void main() {
+    uint vid = uint(gl_VertexIndex);
+    gl_Position = vec4(vid == 1 ? 3.0 : -1.0,
+                       vid == 2 ? 3.0 : -1.0, 0.0, 1.0);
+    out_uv = vec2(vid == 1 ? 2.0 : 0.0,
+                  vid == 2 ? 2.0 : 0.0);
 }
 )";
 
 static const char* kBlitPS = R"(
-Texture2D<float4> g_Texture : register(t0);
-SamplerState g_Sampler : register(s0);
-struct PSInput {
-    float4 pos : SV_POSITION;
-    float2 uv  : TEXCOORD0;
-};
-struct PSOutput {
-    float4 color : SV_TARGET0;
-};
-void main(in PSInput In, out PSOutput Out) {
-    float2 uv = float2(In.uv.x, 1.0 - In.uv.y);
-    Out.color = g_Texture.Sample(g_Sampler, uv);
+#version 450
+layout(binding = 0) uniform texture2D g_Texture;
+layout(binding = 1) uniform sampler g_Sampler;
+layout(location = 0) in vec2 in_uv;
+layout(location = 0) out vec4 out_color;
+void main() {
+    vec2 uv = vec2(in_uv.x, 1.0 - in_uv.y);
+    out_color = texture(sampler2D(g_Texture, g_Sampler), uv);
 }
 )";
 
+static bool compileGlslToSpv(const char* source, EShLanguage stage,
+                             std::vector<uint32_t>& out_spirv) {
+  static const bool glslang_ready = [] {
+    return glslang::InitializeProcess();
+  }();
+  if (!glslang_ready) {
+    REXLOG_ERROR("NativeDevice: glslang InitializeProcess failed");
+    return false;
+  }
+
+  glslang::TShader shader(stage);
+  const char* strings[] = {source};
+  shader.setStrings(strings, 1);
+  shader.setEntryPoint("main");
+  shader.setSourceEntryPoint("main");
+  shader.setEnvInput(glslang::EShSourceGlsl, stage, glslang::EShClientVulkan,
+                     450);
+  shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
+  shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
+
+  const auto messages = EShMessages(EShMsgSpvRules | EShMsgVulkanRules);
+  if (!shader.parse(&glslang::DefaultTBuiltInResource, 450, false, messages)) {
+    REXLOG_ERROR("NativeDevice: glslang parse failed: {}",
+                 shader.getInfoLog() ? shader.getInfoLog() : "");
+    return false;
+  }
+  glslang::TProgram program;
+  program.addShader(&shader);
+  if (!program.link(messages)) {
+    REXLOG_ERROR("NativeDevice: glslang link failed: {}",
+                 program.getInfoLog() ? program.getInfoLog() : "");
+    return false;
+  }
+  glslang::GlslangToSpv(*program.getIntermediate(stage), out_spirv);
+  return !out_spirv.empty();
+}
+
+static Diligent::IShader* createShader(Diligent::IRenderDevice* device,
+                                           const char* source,
+                                           Diligent::SHADER_TYPE type,
+                                           const char* name) {
+  std::vector<uint32_t> spirv;
+  if (!compileGlslToSpv(
+          source,
+          type == Diligent::SHADER_TYPE_VERTEX ? EShLangVertex
+                                               : EShLangFragment,
+          spirv)) {
+    return nullptr;
+  }
+  Diligent::ShaderCreateInfo ci;
+  ci.ByteCode = spirv.data();
+  ci.ByteCodeSize = spirv.size() * sizeof(uint32_t);
+  ci.EntryPoint = "main";
+  ci.Desc.ShaderType = type;
+  ci.Desc.Name = name;
+  Diligent::IShader* shader = nullptr;
+  device->CreateShader(ci, &shader);
+  return shader;
+}
+
 bool NativeDevice::initializeBlitPipeline() {
   if (!impl_->blit_pipeline) {
-    Diligent::ShaderCreateInfo vs_ci;
-    vs_ci.SourceLanguage = Diligent::SHADER_SOURCE_LANGUAGE_HLSL;
-    vs_ci.Source = kBlitVS;
-    vs_ci.EntryPoint = "main";
-    vs_ci.Desc.ShaderType = Diligent::SHADER_TYPE_VERTEX;
-    vs_ci.Desc.Name = "BlitVS";
-    Diligent::IShader* vs = nullptr;
-    impl_->device->CreateShader(vs_ci, &vs);
+    Diligent::IShader* vs = createShader(
+        impl_->device, kBlitVS, Diligent::SHADER_TYPE_VERTEX, "BlitVS");
     if (!vs) {
       REXLOG_ERROR("NativeDevice: Failed to compile blit VS");
       return false;
     }
 
-    Diligent::ShaderCreateInfo ps_ci;
-    ps_ci.SourceLanguage = Diligent::SHADER_SOURCE_LANGUAGE_HLSL;
-    ps_ci.Source = kBlitPS;
-    ps_ci.EntryPoint = "main";
-    ps_ci.Desc.ShaderType = Diligent::SHADER_TYPE_PIXEL;
-    ps_ci.Desc.Name = "BlitPS";
-    Diligent::IShader* ps = nullptr;
-    impl_->device->CreateShader(ps_ci, &ps);
+    Diligent::IShader* ps = createShader(
+        impl_->device, kBlitPS, Diligent::SHADER_TYPE_PIXEL, "BlitPS");
     if (!ps) {
       REXLOG_ERROR("NativeDevice: Failed to compile blit PS");
       vs->Release();
@@ -382,7 +438,7 @@ bool NativeDevice::initializeBlitPipeline() {
       return false;
     }
 
-    REXLOG_INFO("NativeDevice: blit pipeline created (HLSL/glslang, cull=none)");
+    REXLOG_INFO("NativeDevice: blit pipeline created (GLSL->SPIRV, cull=none)");
 
   }
   return true;
@@ -1096,29 +1152,17 @@ void NativeDevice::bindTexture(uint8_t shader_stage, uint8_t binding_slot,
 NativePipeline* NativeDevice::createPipeline(const PipelineDesc& desc) {
   if (!impl_->initialized) return nullptr;
 
-  Diligent::ShaderCreateInfo vs_ci;
-  vs_ci.SourceLanguage = Diligent::SHADER_SOURCE_LANGUAGE_HLSL;
-  vs_ci.Source = desc.vertex_shader_source;
-  vs_ci.EntryPoint = "main";
-  vs_ci.Desc.ShaderType = Diligent::SHADER_TYPE_VERTEX;
-  vs_ci.Desc.Name = "NativeVS";
-
-  Diligent::IShader* vs = nullptr;
-  impl_->device->CreateShader(vs_ci, &vs);
+  Diligent::IShader* vs = createShader(
+      impl_->device, desc.vertex_shader_source, Diligent::SHADER_TYPE_VERTEX,
+      "NativeVS");
   if (!vs) {
     REXLOG_ERROR("NativeDevice: Failed to compile vertex shader");
     return nullptr;
   }
 
-  Diligent::ShaderCreateInfo ps_ci;
-  ps_ci.SourceLanguage = Diligent::SHADER_SOURCE_LANGUAGE_HLSL;
-  ps_ci.Source = desc.pixel_shader_source;
-  ps_ci.EntryPoint = "main";
-  ps_ci.Desc.ShaderType = Diligent::SHADER_TYPE_PIXEL;
-  ps_ci.Desc.Name = "NativePS";
-
-  Diligent::IShader* ps = nullptr;
-  impl_->device->CreateShader(ps_ci, &ps);
+  Diligent::IShader* ps = createShader(
+      impl_->device, desc.pixel_shader_source, Diligent::SHADER_TYPE_PIXEL,
+      "NativePS");
   if (!ps) {
     REXLOG_ERROR("NativeDevice: Failed to compile pixel shader");
     vs->Release();

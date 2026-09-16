@@ -40,8 +40,10 @@ class DanteGraphicsSystem : public rex::system::IGraphicsSystem {
 };
 
 // Builds the graphics system selected by the `renderer` cvar:
-//   "xenos"  -> nullptr (ReXApp loads the rexgpu-xenos plugin as usual)
-//   "native" -> DanteGraphicsSystem wrapping the configured gpu_plugin
+//   "xenos"   -> nullptr (ReXApp loads the rexgpu-xenos plugin as usual)
+//   "native"  -> DanteGraphicsSystem wrapping an in-process
+//                rex::graphics::vulkan::VulkanGraphicsSystem
+//   "wrapped" -> DanteGraphicsSystem wrapping the configured gpu_plugin
 // nullptr means "fall back to the default plugin path".
 std::unique_ptr<rex::system::IGraphicsSystem> CreateConfiguredGraphicsSystem(
     const std::string& gpu_plugin);

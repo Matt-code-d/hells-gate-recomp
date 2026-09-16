@@ -4,9 +4,15 @@
 #include <rex/logging/macros.h>
 #include <rex/system/gpu_plugin.h>
 
+#if REX_HAS_VULKAN
+#include <rex/graphics/vulkan/graphics_system.h>
+#endif
+
 REXCVAR_DEFINE_STRING(renderer, "xenos", "Graphics",
                       "Graphics system: 'xenos' loads the rexgpu-xenos plugin "
-                      "(default), 'native' routes through DanteGraphicsSystem");
+                      "(default), 'native' uses the in-process Vulkan xenos "
+                      "backend, 'wrapped' forwards to the plugin through "
+                      "DanteGraphicsSystem");
 
 namespace dante {
 
@@ -76,6 +82,20 @@ std::unique_ptr<rex::system::IGraphicsSystem> CreateConfiguredGraphicsSystem(
     return nullptr;
   }
   if (renderer == "native") {
+#if REX_HAS_VULKAN
+    REXLOG_INFO(
+        "DanteGraphicsSystem: renderer=native, constructing in-process "
+        "Vulkan xenos backend");
+    return std::make_unique<DanteGraphicsSystem>(
+        std::make_unique<rex::graphics::vulkan::VulkanGraphicsSystem>());
+#else
+    REXLOG_ERROR(
+        "renderer=native requires a Vulkan-enabled SDK build "
+        "(REXGLUE_USE_VULKAN); falling back to the default plugin path");
+    return nullptr;
+#endif
+  }
+  if (renderer == "wrapped") {
     auto inner = rex::system::LoadGpuPlugin(gpu_plugin);
     if (!inner) {
       REXLOG_ERROR(

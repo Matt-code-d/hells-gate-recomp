@@ -43,66 +43,46 @@ struct CameraCB {
 };
 
 static const char* kVSTri = R"(
-cbuffer CameraCB {
-    float4x4 g_Transform;
-};
-struct VSInput {
-    float2 pos   : ATTRIB0;
-    float3 color : ATTRIB1;
-};
-struct VSOutput {
-    float4 pos   : SV_POSITION;
-    float3 color : COLOR;
-};
-void main(in VSInput In, out VSOutput Out) {
-    Out.pos = mul(g_Transform, float4(In.pos, 0.0, 1.0));
-    Out.color = In.color;
+#version 450
+layout(binding = 0) uniform CameraCB { mat4 g_Transform; };
+layout(location = 0) in vec2 in_pos;
+layout(location = 1) in vec3 in_color;
+layout(location = 0) out vec3 out_color;
+void main() {
+    gl_Position = g_Transform * vec4(in_pos, 0.0, 1.0);
+    out_color = in_color;
 }
 )";
 
 static const char* kPSTri = R"(
-struct PSInput {
-    float4 pos   : SV_POSITION;
-    float3 color : COLOR;
-};
-struct PSOutput {
-    float4 color : SV_TARGET0;
-};
-void main(in PSInput In, out PSOutput Out) {
-    Out.color = float4(In.color, 1.0);
+#version 450
+layout(location = 0) in vec3 in_color;
+layout(location = 0) out vec4 out_color;
+void main() {
+    out_color = vec4(in_color, 1.0);
 }
 )";
 
 static const char* kVSQuad = R"(
-cbuffer CameraCB {
-    float4x4 g_Transform;
-};
-struct VSInput {
-    float2 pos : ATTRIB0;
-    float2 uv  : ATTRIB1;
-};
-struct VSOutput {
-    float4 pos : SV_POSITION;
-    float2 uv  : TEXCOORD0;
-};
-void main(in VSInput In, out VSOutput Out) {
-    Out.pos = mul(g_Transform, float4(In.pos, 0.0, 1.0));
-    Out.uv = In.uv;
+#version 450
+layout(binding = 0) uniform CameraCB { mat4 g_Transform; };
+layout(location = 0) in vec2 in_pos;
+layout(location = 1) in vec2 in_uv;
+layout(location = 0) out vec2 out_uv;
+void main() {
+    gl_Position = g_Transform * vec4(in_pos, 0.0, 1.0);
+    out_uv = in_uv;
 }
 )";
 
 static const char* kPSQuad = R"(
-Texture2D g_Texture;
-SamplerState g_Sampler;
-struct PSInput {
-    float4 pos : SV_POSITION;
-    float2 uv  : TEXCOORD0;
-};
-struct PSOutput {
-    float4 color : SV_TARGET0;
-};
-void main(in PSInput In, out PSOutput Out) {
-    Out.color = g_Texture.Sample(g_Sampler, In.uv);
+#version 450
+layout(binding = 1) uniform texture2D g_Texture;
+layout(binding = 2) uniform sampler g_Sampler;
+layout(location = 0) in vec2 in_uv;
+layout(location = 0) out vec4 out_color;
+void main() {
+    out_color = texture(sampler2D(g_Texture, g_Sampler), in_uv);
 }
 )";
 
