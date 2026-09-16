@@ -4,6 +4,10 @@
 #include <rex/logging/macros.h>
 #include <rex/system/gpu_plugin.h>
 
+#include <windows.h>
+
+#include <cstdlib>
+
 #if REX_HAS_VULKAN
 #include <rex/graphics/vulkan/graphics_system.h>
 #endif
@@ -13,6 +17,13 @@ REXCVAR_DEFINE_STRING(renderer, "xenos", "Graphics",
                       "(default), 'native' uses the in-process Vulkan xenos "
                       "backend, 'wrapped' forwards to the plugin through "
                       "DanteGraphicsSystem");
+
+REXCVAR_DEFINE_STRING(native_render_scale, "off", "Graphics",
+                      "Guest draw resolution scale, applied via the SDK "
+                      "'resolution_scale' cvar before GPU init. 'off' leaves "
+                      "the SDK default, 'auto' derives the scale from the "
+                      "display height (display_height / 720, rounded), "
+                      "'1'-'7' forces a fixed integer scale");
 
 namespace dante {
 
@@ -108,6 +119,36 @@ std::unique_ptr<rex::system::IGraphicsSystem> CreateConfiguredGraphicsSystem(
   }
   REXLOG_WARN("Unknown renderer='{}'; using default xenos plugin", renderer);
   return nullptr;
+}
+
+void ApplyRenderScaleConfig() {
+  const std::string mode =
+      rex::cvar::Query<std::string>("native_render_scale");
+  if (mode.empty() || mode == "off") {
+    return;
+  }
+
+  int scale = 0;
+  if (mode == "auto") {
+    // The guest always renders a 720p-class frame; pick the integer scale
+    // that best matches the target display height, rounding up so
+    // non-integer ratios supersample rather than undersample.
+    const bool fullscreen = rex::cvar::Query<bool>("fullscreen");
+    const int window_height = rex::cvar::Query<int32_t>("window_height");
+    const int target_height =
+        fullscreen ? GetSystemMetrics(SM_CYSCREEN)
+                   : (window_height > 0 ? window_height : 720);
+    scale = (target_height + 359) / 720;
+  } else {
+    scale = std::atoi(mode.c_str());
+  }
+
+  scale = std::clamp(scale, 1, 7);
+  if (scale <= 1) {
+    return;
+  }
+  REXLOG_INFO("native_render_scale={} -> resolution_scale={}", mode, scale);
+  rex::cvar::SetFlagByName("resolution_scale", std::to_string(scale));
 }
 
 }  // namespace dante

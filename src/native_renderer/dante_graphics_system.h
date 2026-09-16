@@ -48,4 +48,9 @@ class DanteGraphicsSystem : public rex::system::IGraphicsSystem {
 std::unique_ptr<rex::system::IGraphicsSystem> CreateConfiguredGraphicsSystem(
     const std::string& gpu_plugin);
 
+// Applies the `native_render_scale` cvar to the SDK `resolution_scale` cvar.
+// Must run before SetupGuestGpu (which captures the scale). Works with any
+// graphics backend since it only adjusts the shared cvar.
+void ApplyRenderScaleConfig();
+
 }  // namespace dante

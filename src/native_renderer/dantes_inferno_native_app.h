@@ -21,6 +21,7 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
     DantesInfernoApp::OnPreSetup(config);
+    dante::ApplyRenderScaleConfig();
     auto graphics = dante::CreateConfiguredGraphicsSystem(config.gpu_plugin);
     if (graphics) {
       config.graphics = std::move(graphics);
