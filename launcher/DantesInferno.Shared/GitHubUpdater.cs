@@ -148,7 +148,7 @@ namespace DantesInferno
 
     public static class GitHubUpdater
     {
-        private const string ApiUrl = "https://api.github.com/repos/florinp93/dantes-inferno/releases";
+        private const string ApiUrl = "https://api.github.com/repos/florinp93/hells-gate-recomp/releases";
 
         static GitHubUpdater()
         {

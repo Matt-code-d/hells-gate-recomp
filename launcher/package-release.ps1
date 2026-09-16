@@ -49,12 +49,21 @@ if (Test-Path $issFile) {
     Write-Host "Updated installer.iss MyAppVersion -> $Version"
 }
 
-$gameFiles = @("dantes_inferno.exe", "rexruntime.dll", "rexgpu-xenos.dll")
+$gameFiles = @("dantes_inferno.exe", "dantes_inferno_native.exe", "rexruntime.dll", "rexgpu-xenos.dll", "amd_fidelityfx_dx12.dll")
 foreach ($f in $gameFiles) {
     $src = Join-Path $GameBuildDir $f
     if (-not (Test-Path $src)) {
         Write-Error "Missing game binary: $src"
     }
+}
+
+$ffxVkDll = Join-Path $GameBuildDir "..\..\thirdparty\rexglue-sdk\out\win-amd64\amd_fidelityfx_vk.dll"
+$ffxVkDst = Join-Path $GameBuildDir "amd_fidelityfx_vk.dll"
+if (Test-Path $ffxVkDll) {
+    Copy-Item $ffxVkDll $ffxVkDst -Force
+    Write-Host "Copied amd_fidelityfx_vk.dll to build output for packaging"
+} else {
+    Write-Warning "amd_fidelityfx_vk.dll not found at $ffxVkDll - installer may not include it"
 }
 
 $tuSrc = Join-Path $root "..\game\default.xexp"

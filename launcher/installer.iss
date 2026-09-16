@@ -4,7 +4,7 @@
 
 #define MyAppName "Dante's Inferno"
 #define MyAppPublisher "florinp93"
-#define MyAppURL "https://github.com/florinp93/dantes-inferno"
+#define MyAppURL "https://github.com/florinp93/hells-gate-recomp"
 #define MyAppExeName "DantesInfernoLauncher.exe"
 #define MyAppVersion "0.6.6-beta"
 
@@ -45,6 +45,8 @@ Source: "..\out\build\win-amd64-release\dantes_inferno.exe"; DestDir: "{app}"; F
 Source: "..\out\build\win-amd64-release\dantes_inferno_native.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\out\build\win-amd64-release\rexruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\out\build\win-amd64-release\rexgpu-xenos.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\out\build\win-amd64-release\amd_fidelityfx_dx12.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\out\build\win-amd64-release\amd_fidelityfx_vk.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Launcher
 Source: "DantesInfernoLauncher\bin\Release\DantesInfernoLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion
