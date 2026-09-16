@@ -33,6 +33,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace dante {
@@ -110,15 +111,37 @@ struct NativeDevice::Impl {
     }
   }
 
-  void* imported_handle = nullptr;
-  VkImage imported_vk_image = VK_NULL_HANDLE;
-  VkDeviceMemory imported_vk_memory = VK_NULL_HANDLE;
-  Diligent::ITexture* imported_texture = nullptr;
-  Diligent::ITextureView* imported_srv = nullptr;
-  Diligent::IShaderResourceBinding* imported_srb = nullptr;
-  uint32_t imported_w = 0;
-  uint32_t imported_h = 0;
+  // The D3D12 presenter rotates shared handles across its mailbox slots, so
+  // imported images are cached per handle instead of re-importing per frame.
+  struct ImportedImage {
+    VkImage vk_image = VK_NULL_HANDLE;
+    VkDeviceMemory vk_memory = VK_NULL_HANDLE;
+    Diligent::ITexture* texture = nullptr;
+    Diligent::ITextureView* srv = nullptr;
+    Diligent::IShaderResourceBinding* srb = nullptr;
+    uint32_t w = 0;
+    uint32_t h = 0;
+  };
+  std::unordered_map<void*, ImportedImage> imported_images;
   bool ext_memory_supported = false;
+
+  void releaseImportedImage(ImportedImage& img) {
+    if (img.srb) { img.srb->Release(); img.srb = nullptr; }
+    if (img.srv) { img.srv->Release(); img.srv = nullptr; }
+    if (img.texture) { img.texture->Release(); img.texture = nullptr; }
+    if (img.vk_image != VK_NULL_HANDLE) {
+      vkDestroyImage(static_cast<Diligent::IRenderDeviceVk*>(device)->GetVkDevice(),
+                     img.vk_image, nullptr);
+      img.vk_image = VK_NULL_HANDLE;
+    }
+    if (img.vk_memory != VK_NULL_HANDLE) {
+      vkFreeMemory(static_cast<Diligent::IRenderDeviceVk*>(device)->GetVkDevice(),
+                   img.vk_memory, nullptr);
+      img.vk_memory = VK_NULL_HANDLE;
+    }
+    img.w = 0;
+    img.h = 0;
+  }
 };
 
 NativeDevice::NativeDevice() : impl_(new Impl()) {}
@@ -575,30 +598,16 @@ bool NativeDevice::presentImageShared(void* shared_handle, uint32_t width,
     REXLOG_INFO("NativeDevice: external memory import supported");
   }
 
-  if (impl_->imported_handle != shared_handle ||
-      impl_->imported_w != width || impl_->imported_h != height) {
-    if (impl_->imported_srb) {
-      impl_->imported_srb->Release();
-      impl_->imported_srb = nullptr;
-    }
-    if (impl_->imported_srv) {
-      impl_->imported_srv->Release();
-      impl_->imported_srv = nullptr;
-    }
-    if (impl_->imported_texture) {
-      impl_->imported_texture->Release();
-      impl_->imported_texture = nullptr;
-    }
-    if (impl_->imported_vk_image != VK_NULL_HANDLE) {
-      vkDestroyImage(static_cast<Diligent::IRenderDeviceVk*>(impl_->device)->GetVkDevice(),
-                     impl_->imported_vk_image, nullptr);
-      impl_->imported_vk_image = VK_NULL_HANDLE;
-    }
-    if (impl_->imported_vk_memory != VK_NULL_HANDLE) {
-      vkFreeMemory(static_cast<Diligent::IRenderDeviceVk*>(impl_->device)->GetVkDevice(),
-                   impl_->imported_vk_memory, nullptr);
-      impl_->imported_vk_memory = VK_NULL_HANDLE;
-    }
+  auto img_it = impl_->imported_images.find(shared_handle);
+  if (img_it != impl_->imported_images.end() &&
+      (img_it->second.w != width || img_it->second.h != height)) {
+    impl_->releaseImportedImage(img_it->second);
+    impl_->imported_images.erase(img_it);
+    img_it = impl_->imported_images.end();
+  }
+
+  if (img_it == impl_->imported_images.end()) {
+    Impl::ImportedImage img;
 
     auto* render_device_vk = static_cast<Diligent::IRenderDeviceVk*>(impl_->device);
     VkDevice vk_dev = render_device_vk->GetVkDevice();
@@ -623,19 +632,18 @@ bool NativeDevice::presentImageShared(void* shared_handle, uint32_t width,
     image_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    VkResult res = vkCreateImage(vk_dev, &image_ci, nullptr, &impl_->imported_vk_image);
+    VkResult res = vkCreateImage(vk_dev, &image_ci, nullptr, &img.vk_image);
     if (res != VK_SUCCESS) {
       REXLOG_ERROR("NativeDevice: vkCreateImage failed (res={})", int(res));
-      impl_->imported_vk_image = VK_NULL_HANDLE;
       return false;
     }
 
     VkMemoryRequirements mem_reqs;
-    vkGetImageMemoryRequirements(vk_dev, impl_->imported_vk_image, &mem_reqs);
+    vkGetImageMemoryRequirements(vk_dev, img.vk_image, &mem_reqs);
 
     VkMemoryDedicatedAllocateInfo dedicated_ai{};
     dedicated_ai.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
-    dedicated_ai.image = impl_->imported_vk_image;
+    dedicated_ai.image = img.vk_image;
     dedicated_ai.buffer = VK_NULL_HANDLE;
 
     VkImportMemoryWin32HandleInfoKHR import_info{};
@@ -672,27 +680,21 @@ bool NativeDevice::presentImageShared(void* shared_handle, uint32_t width,
     }
     if (alloc_info.memoryTypeIndex == UINT32_MAX) {
       REXLOG_ERROR("NativeDevice: No suitable memory type for imported image");
-      vkDestroyImage(vk_dev, impl_->imported_vk_image, nullptr);
-      impl_->imported_vk_image = VK_NULL_HANDLE;
+      impl_->releaseImportedImage(img);
       return false;
     }
 
-    res = vkAllocateMemory(vk_dev, &alloc_info, nullptr, &impl_->imported_vk_memory);
+    res = vkAllocateMemory(vk_dev, &alloc_info, nullptr, &img.vk_memory);
     if (res != VK_SUCCESS) {
       REXLOG_ERROR("NativeDevice: vkAllocateMemory failed (res={})", int(res));
-      vkDestroyImage(vk_dev, impl_->imported_vk_image, nullptr);
-      impl_->imported_vk_image = VK_NULL_HANDLE;
+      impl_->releaseImportedImage(img);
       return false;
     }
 
-    res = vkBindImageMemory(vk_dev, impl_->imported_vk_image,
-                            impl_->imported_vk_memory, 0);
+    res = vkBindImageMemory(vk_dev, img.vk_image, img.vk_memory, 0);
     if (res != VK_SUCCESS) {
       REXLOG_ERROR("NativeDevice: vkBindImageMemory failed (res={})", int(res));
-      vkFreeMemory(vk_dev, impl_->imported_vk_memory, nullptr);
-      impl_->imported_vk_memory = VK_NULL_HANDLE;
-      vkDestroyImage(vk_dev, impl_->imported_vk_image, nullptr);
-      impl_->imported_vk_image = VK_NULL_HANDLE;
+      impl_->releaseImportedImage(img);
       return false;
     }
 
@@ -707,23 +709,21 @@ bool NativeDevice::presentImageShared(void* shared_handle, uint32_t width,
     tex_desc.Name = "ImportedGuestOutput";
 
     render_device_vk->CreateTextureFromVulkanImage(
-        impl_->imported_vk_image, tex_desc,
-        Diligent::RESOURCE_STATE_SHADER_RESOURCE, &impl_->imported_texture);
-    if (!impl_->imported_texture) {
+        img.vk_image, tex_desc,
+        Diligent::RESOURCE_STATE_SHADER_RESOURCE, &img.texture);
+    if (!img.texture) {
       REXLOG_ERROR("NativeDevice: CreateTextureFromVulkanImage failed");
-      vkFreeMemory(vk_dev, impl_->imported_vk_memory, nullptr);
-      impl_->imported_vk_memory = VK_NULL_HANDLE;
-      vkDestroyImage(vk_dev, impl_->imported_vk_image, nullptr);
-      impl_->imported_vk_image = VK_NULL_HANDLE;
+      impl_->releaseImportedImage(img);
       return false;
     }
 
-    impl_->blit_pipeline->CreateShaderResourceBinding(&impl_->imported_srb, true);
-    if (!impl_->imported_srb) {
+    impl_->blit_pipeline->CreateShaderResourceBinding(&img.srb, true);
+    if (!img.srb) {
       REXLOG_ERROR("NativeDevice: Failed to create imported SRB");
+      impl_->releaseImportedImage(img);
       return false;
     }
-    auto* tex_var = impl_->imported_srb->GetVariableByName(
+    auto* tex_var = img.srb->GetVariableByName(
         Diligent::SHADER_TYPE_PIXEL, "g_Texture");
     Diligent::TextureViewDesc srv_desc;
     srv_desc.ViewType = Diligent::TEXTURE_VIEW_SHADER_RESOURCE;
@@ -735,19 +735,21 @@ bool NativeDevice::presentImageShared(void* shared_handle, uint32_t width,
         Diligent::TEXTURE_COMPONENT_SWIZZLE_G,
         Diligent::TEXTURE_COMPONENT_SWIZZLE_R,
         Diligent::TEXTURE_COMPONENT_SWIZZLE_A);
-    impl_->imported_texture->CreateView(srv_desc, &impl_->imported_srv);
-    if (!impl_->imported_srv) {
+    img.texture->CreateView(srv_desc, &img.srv);
+    if (!img.srv) {
       REXLOG_ERROR("NativeDevice: Failed to create swizzled SRV for imported texture");
+      impl_->releaseImportedImage(img);
       return false;
     }
-    if (tex_var && impl_->imported_srv) tex_var->Set(impl_->imported_srv);
+    if (tex_var) tex_var->Set(img.srv);
 
-    impl_->imported_handle = shared_handle;
-    impl_->imported_w = width;
-    impl_->imported_h = height;
+    img.w = width;
+    img.h = height;
     REXLOG_INFO("NativeDevice: imported D3D12 shared texture ({}x{}, handle={:#x})",
                 width, height, reinterpret_cast<uintptr_t>(shared_handle));
+    img_it = impl_->imported_images.emplace(shared_handle, img).first;
   }
+  const auto& imported = img_it->second;
 
   auto* rtv = impl_->swapchain->GetCurrentBackBufferRTV();
   auto* dsv = impl_->swapchain->GetDepthBufferDSV();
@@ -762,7 +764,7 @@ bool NativeDevice::presentImageShared(void* shared_handle, uint32_t width,
 
   impl_->context->SetPipelineState(impl_->blit_pipeline);
   impl_->context->CommitShaderResources(
-      impl_->imported_srb, Diligent::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      imported.srb, Diligent::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   Diligent::DrawAttribs da;
   da.NumVertices = 3;
   da.Flags = Diligent::DRAW_FLAG_VERIFY_ALL;
@@ -804,22 +806,10 @@ void NativeDevice::shutdown() {
   impl_->blit_texture_w = 0;
   impl_->blit_texture_h = 0;
 
-  if (impl_->imported_srb) { impl_->imported_srb->Release(); impl_->imported_srb = nullptr; }
-  if (impl_->imported_srv) { impl_->imported_srv->Release(); impl_->imported_srv = nullptr; }
-  if (impl_->imported_texture) { impl_->imported_texture->Release(); impl_->imported_texture = nullptr; }
-  if (impl_->imported_vk_image != VK_NULL_HANDLE) {
-    vkDestroyImage(static_cast<Diligent::IRenderDeviceVk*>(impl_->device)->GetVkDevice(),
-                   impl_->imported_vk_image, nullptr);
-    impl_->imported_vk_image = VK_NULL_HANDLE;
+  for (auto& [handle, img] : impl_->imported_images) {
+    impl_->releaseImportedImage(img);
   }
-  if (impl_->imported_vk_memory != VK_NULL_HANDLE) {
-    vkFreeMemory(static_cast<Diligent::IRenderDeviceVk*>(impl_->device)->GetVkDevice(),
-                 impl_->imported_vk_memory, nullptr);
-    impl_->imported_vk_memory = VK_NULL_HANDLE;
-  }
-  impl_->imported_handle = nullptr;
-  impl_->imported_w = 0;
-  impl_->imported_h = 0;
+  impl_->imported_images.clear();
   impl_->ext_memory_supported = false;
 
   if (impl_->swapchain) { impl_->swapchain->Release(); impl_->swapchain = nullptr; }
