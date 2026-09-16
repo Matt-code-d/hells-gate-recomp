@@ -67,6 +67,7 @@ if(DANTESINFERNO_NATIVE_RENDERER)
     add_subdirectory("${DILIGENT_CORE_DIR}" "${CMAKE_BINARY_DIR}/diligent-core" EXCLUDE_FROM_ALL)
 
     add_library(dante_native_renderer STATIC
+        src/native_renderer/dante_graphics_system.cpp
         src/native_renderer/native_device.cpp
         src/native_renderer/native_renderer_integration.cpp
         src/native_renderer/native_presenter.cpp

@@ -2,10 +2,12 @@
 #pragma once
 
 #include "dantes_inferno_app.h"
+#include "native_renderer/dante_graphics_system.h"
 #include "native_renderer/native_presenter.h"
 
 #include <rex/cvar.h>
 #include <rex/graphics/graphics_system.h>
+#include <rex/runtime.h>
 
 class DantesInfernoNativeApp : public DantesInfernoApp {
  public:
@@ -17,15 +19,21 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
         new DantesInfernoNativeApp(ctx, "dantes_inferno", PPCImageConfig));
   }
 
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    DantesInfernoApp::OnPreSetup(config);
+    auto graphics = dante::CreateConfiguredGraphicsSystem(config.gpu_plugin);
+    if (graphics) {
+      config.graphics = std::move(graphics);
+    }
+  }
+
   void OnPostSetup() override {
     DantesInfernoApp::OnPostSetup();
 
     if (!rex::cvar::Query<bool>("use_native_presenter")) return;
     if (!window()) return;
 
-    auto* gfx_sys = runtime()
-        ? static_cast<rex::graphics::GraphicsSystem*>(runtime()->graphics_system())
-        : nullptr;
+    auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
     auto* presenter = gfx_sys ? gfx_sys->presenter() : nullptr;
     if (!presenter) {
       REXLOG_WARN("Native presenter: no graphics presenter; staying on Xenos path");
